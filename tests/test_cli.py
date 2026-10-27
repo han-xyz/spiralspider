@@ -1,13 +1,16 @@
+import contextlib
+import io
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from context import ROOT
-from spiralspider.cli import write_results
+from spiralspider.cli import main, write_results
 from spiralspider.items import Listed, Record
 from spiralspider.pipelines import Harvest
-from spiralspider.spiraltools_import import world
+from spiralspider.spiraltools_import import WORLDS, world
 
 # A Twisted reactor runs once per process, so the crawl runs in a process of its own.
 TWO_SPIDERS = f"""
@@ -62,3 +65,16 @@ class Results(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Assist(unittest.TestCase):
+    def test_runs_for_the_named_worlds_or_all_of_them(self):
+        with mock.patch("spiralspider.assist.run") as run:
+            main(["assist", "celestia", "Zafaria", "--cache", "c", "--profile", "p"])
+            main(["assist", "--all-worlds"])
+        self.assertEqual(run.call_args_list[0], mock.call([world("Celestia"), world("Zafaria")], "c", "p"))
+        self.assertEqual(run.call_args_list[1].args[0], list(WORLDS))
+
+    def test_needs_a_world(self):
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            main(["assist"])

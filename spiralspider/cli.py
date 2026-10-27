@@ -8,6 +8,7 @@ from scrapy.utils.defer import deferred_from_coro
 from scrapy.utils.log import configure_logging
 from scrapy.utils.reactor import install_reactor
 
+from . import assist
 from .merge import PRIORITY, merge
 from .pipelines import Harvest
 from .report import format_report, gap_report, read_report, write_report
@@ -18,11 +19,13 @@ from .sources.spiraltracker import SpiralTracker
 from .sources.wiki_archive import WikiArchive
 from .sources.wiki_live import WikiLive
 from .specs import build_spec, spec_id, write_spec
-from .spiraltools_import import world
+from .spiraltools_import import WORLDS, world
 
 SOURCES = {source.name: source for source in (WikiLive, WikiArchive, SpiralTracker, Folio, ForumGuide)}
 SELECTIONS = {"live": ("wiki_live",), "archive": ("wiki_archive",), "all": PRIORITY}
 ASYNCIO_REACTOR = "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
+ASSIST_CACHE = os.path.join("..", "spiraldb", ".scratch", "friends-server", "task-A1", "cache")
+ASSIST_PROFILE = os.path.join(".scratch", "assist-profile")
 
 
 def crawl(registered, selected, cache):
@@ -92,6 +95,13 @@ def run_gaps(args):
     print(format_report(read_report(os.path.join(args.out, world(args.world).name.lower()))))
 
 
+def run_assist(args):
+    if not args.worlds and not args.all_worlds:
+        raise SystemExit("assist: name a world or pass --all-worlds")
+    worlds = list(WORLDS) if args.all_worlds else [world(name) for name in args.worlds]
+    assist.run(worlds, args.cache, args.profile)
+
+
 def run_sources(_args):
     for rank, name in enumerate(PRIORITY, 1):
         summary = (sys.modules[SOURCES[name].__module__].__doc__ or "").strip().splitlines()[0]
@@ -111,6 +121,15 @@ def main(argv=None):
     gaps_parser.add_argument("world")
     gaps_parser.add_argument("--out", default="out")
     gaps_parser.set_defaults(run=run_gaps)
+    assist_parser = commands.add_parser("assist", help="fetch the live pages a world's archive index lacks, in a "
+                                        "visible browser where you solve the wiki's check")
+    assist_parser.add_argument("worlds", nargs="*")
+    assist_parser.add_argument("--all-worlds", action="store_true")
+    assist_parser.add_argument("--cache", default=ASSIST_CACHE,
+                               help=f"spiraltools' archive cache with the index-<world>.json (default {ASSIST_CACHE})")
+    assist_parser.add_argument("--profile", default=ASSIST_PROFILE,
+                               help=f"the browser profile that keeps the wiki's clearance (default {ASSIST_PROFILE})")
+    assist_parser.set_defaults(run=run_assist)
     commands.add_parser("sources", help="list the sources in priority order").set_defaults(run=run_sources)
     args = parser.parse_args(argv)
     args.run(args)
