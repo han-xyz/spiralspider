@@ -67,7 +67,8 @@ SPIDER_CDP_URL=http://host.docker.internal:9222 docker compose run --rm spider c
 Profile, cookies and extensions stay in your browser; the spider only drives pages. Two ready-made ways to reach it:
 
 - a browser on this host: start it with remote debugging and use `http://host.docker.internal:9222` (the compose file
-  maps that name to the host);
+  maps that name to the host). A browser with a window listens on 127.0.0.1 only, which the container cannot reach;
+  forward it to the Docker bridge first, e.g. `socat TCP-LISTEN:9222,fork,bind=172.17.0.1 TCP:127.0.0.1:9222`;
 - a browser container: `docker-compose.browser.yml` adds a `browser` service on the spider's network (Microsoft's
   Playwright image with Chromium, DevTools on 9222) and points the spider at it:
 
@@ -75,7 +76,9 @@ Profile, cookies and extensions stay in your browser; the spider only drives pag
 docker compose -f docker-compose.yml -f docker-compose.browser.yml run --rm spider crawl Celestia
 ```
 
-Swap the `browser` service's image for whatever browser you run; it only has to serve the DevTools endpoint on 9222. The challenge rule is unchanged:
+Swap the `browser` service's image for whatever browser you run; it only has to serve the DevTools endpoint on 9222.
+The spider resolves the endpoint's host name to its address before connecting, because Chrome's DevTools server
+answers only a Host header that is an address or localhost. The challenge rule is unchanged:
 a challenge page, 403 or 429 storm is recorded and the crawl moves to the next source.
 
 ## Output

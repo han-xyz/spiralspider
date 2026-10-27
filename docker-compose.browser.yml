@@ -17,7 +17,7 @@ services:
     networks:
       - spider
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9222/json/version || exit 1"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9222/json/version').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
       interval: 5s
       timeout: 3s
       retries: 20

@@ -107,9 +107,19 @@ if __name__ == "__main__":
 class CdpUrlTest(unittest.TestCase):
     def test_unset_means_the_bundled_chromium(self):
         from spiralspider.browser import cdp_url
-        self.assertIsNone(cdp_url({}))
-        self.assertIsNone(cdp_url({"SPIDER_CDP_URL": "  "}))
+        self.assertIsNone(cdp_url({}, resolve=self.no_lookup))
+        self.assertIsNone(cdp_url({"SPIDER_CDP_URL": "  "}, resolve=self.no_lookup))
 
-    def test_set_names_the_users_browser(self):
+    def test_an_address_or_localhost_is_used_as_given(self):
         from spiralspider.browser import cdp_url
-        self.assertEqual(cdp_url({"SPIDER_CDP_URL": "http://host.docker.internal:9222"}), "http://host.docker.internal:9222")
+        self.assertEqual(cdp_url({"SPIDER_CDP_URL": "http://127.0.0.1:9222"}, resolve=self.no_lookup), "http://127.0.0.1:9222")
+        self.assertEqual(cdp_url({"SPIDER_CDP_URL": "http://localhost:9222/"}, resolve=self.no_lookup), "http://localhost:9222/")
+
+    def test_a_host_name_is_resolved_to_its_address(self):
+        from spiralspider.browser import cdp_url
+        resolved = cdp_url({"SPIDER_CDP_URL": "http://browser:9222"}, resolve={"browser": "172.18.0.2"}.__getitem__)
+        self.assertEqual(resolved, "http://172.18.0.2:9222")
+
+    @staticmethod
+    def no_lookup(host):
+        raise AssertionError("no lookup expected for " + host)

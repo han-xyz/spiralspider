@@ -1,7 +1,9 @@
 """The sandboxed browser and the rules every request obeys: one request per interval, robots.txt, and the stop rule."""
 import contextlib
-import os
 import datetime
+import ipaddress
+import os
+import socket
 import tempfile
 import time
 import urllib.parse
@@ -117,10 +119,29 @@ class BrowserFetcher:
 CDP_URL_VARIABLE = "SPIDER_CDP_URL"
 
 
-def cdp_url(environ=None):
-    """The DevTools endpoint of a browser the user runs themselves (SPIDER_CDP_URL), or None for the bundled Chromium."""
+def cdp_url(environ=None, resolve=socket.gethostbyname):
+    """The DevTools endpoint of a browser the user runs themselves (SPIDER_CDP_URL), or None for the bundled Chromium.
+
+    Chrome's DevTools server answers only requests whose Host header is an address or localhost, so a host name (a
+    compose service, host.docker.internal) is resolved to its address here.
+    """
     value = (os.environ if environ is None else environ).get(CDP_URL_VARIABLE, "").strip()
-    return value or None
+    if not value:
+        return None
+    parts = urllib.parse.urlsplit(value)
+    host = parts.hostname
+    if host and host != "localhost" and not _is_address(host):
+        address = resolve(host)
+        parts = parts._replace(netloc=f"{address}:{parts.port}" if parts.port else address)
+    return urllib.parse.urlunsplit(parts)
+
+
+def _is_address(host):
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
 
 
 @contextlib.contextmanager
