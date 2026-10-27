@@ -2,53 +2,59 @@
 import argparse
 import os
 import sys
-import urllib.error
 
-from .browser import Blocked, BrowserFetcher, Gate, browser_page
+from scrapy.crawler import CrawlerProcess
+from twisted.internet import defer
+
 from .merge import PRIORITY, merge
+from .pipelines import Harvest
 from .report import format_report, gap_report, read_report, write_report
+from .settings import crawl_settings
 from .sources.folio import Folio
 from .sources.forum_guide import ForumGuide
 from .sources.spiraltracker import SpiralTracker
 from .sources.wiki_archive import WikiArchive
 from .sources.wiki_live import WikiLive
 from .specs import build_spec, spec_id, write_spec
-from .spiraltools_import import archive, world
+from .spiraltools_import import world
 
 SOURCES = {source.name: source for source in (WikiLive, WikiArchive, SpiralTracker, Folio, ForumGuide)}
 SELECTIONS = {"live": ("wiki_live",), "archive": ("wiki_archive",), "all": PRIORITY}
 
 
-def crawl(registered, sources, out_dir):
-    """Run each source in priority order; a source that refuses us is recorded and the crawl moves to the next one."""
-    counts, found, records, blocked, errors = {}, {}, {}, [], []
-    for source in sources:
-        counts[source.name] = {"enumerated": 0, "parsed": 0}
-        try:
-            names = source.enumerate(registered.name)
-            counts[source.name]["enumerated"] = len(names)
-            for name in names:
-                key = archive.title_norm(name)
-                found.setdefault(key, name)
-                if source.name == "wiki_archive" and any(p["source"] == "wiki_live" for _, p in records.get(key, [])):
-                    continue
-                raw = source.fetch(name)
-                record = source.parse(raw) if raw else None
-                if record:
-                    records.setdefault(key, []).append((record, raw.provenance))
-                    counts[source.name]["parsed"] += 1
-        except Blocked as e:
-            blocked.append(e.record())
-            print(f"blocked: {e}; moving to the next source", file=sys.stderr)
-        except urllib.error.HTTPError as e:
-            errors.append({"source": source.name, "url": e.url, "reason": f"HTTP {e.code}"})
-            print(f"{source.name}: {e.url}: HTTP {e.code}; moving to the next source", file=sys.stderr)
-    merged = {key: merge(pairs) for key, pairs in records.items()}
+def crawl(registered, selected, cache):
+    """Run the selected sources' spiders one after the other, in priority order, in one Scrapy process; a source the
+    stop rule blocks is closed and the next one starts. Returns the harvest of all of them."""
+    harvest = Harvest(selected)
+    process = CrawlerProcess(crawl_settings(cache))
+    failures = []
+
+    @defer.inlineCallbacks
+    def one_by_one():
+        for name in selected:
+            yield process.crawl(SOURCES[name], world=registered.name, cache=os.path.join(cache, name), harvest=harvest)
+
+    def stop(_):
+        # Imported here, not at the top: importing the reactor installs one, and the crawler must install asyncio's.
+        from twisted.internet import reactor
+        reactor.stop()
+
+    one_by_one().addErrback(failures.append).addBoth(stop)
+    process.start(stop_after_crawl=False)
+    if failures:
+        failures[0].raiseException()
+    return harvest
+
+
+def write_results(registered, harvest, out_dir):
+    """Merge the harvest's records, write a spec per quest and the gap report; returns the report."""
+    merged = {key: merge(pairs) for key, pairs in harvest.records.items()}
     ids = {key: spec_id(registered, m["fields"]["name"]) for key, m in merged.items()}
     specs = [build_spec(registered, m, ids) for m in merged.values()]
     for spec in specs:
         write_spec(out_dir, spec)
-    report = gap_report(registered.name, counts, found, set(records), blocked, errors, specs)
+    report = gap_report(registered.name, harvest.counts, harvest.found, set(harvest.records), harvest.blocked,
+                        harvest.errors, specs)
     write_report(out_dir, report)
     return report
 
@@ -56,10 +62,8 @@ def crawl(registered, sources, out_dir):
 def run_crawl(args):
     registered = world(args.world)
     out_dir = os.path.join(args.out, registered.name.lower())
-    with browser_page() as page:
-        gate = Gate(BrowserFetcher(page))
-        sources = [SOURCES[name](gate, os.path.join(args.cache, name)) for name in SELECTIONS[args.source]]
-        report = crawl(registered, sources, out_dir)
+    harvest = crawl(registered, SELECTIONS[args.source], args.cache)
+    report = write_results(registered, harvest, out_dir)
     print(format_report(report))
     print(f"specs and gap report: {out_dir}")
 
