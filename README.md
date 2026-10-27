@@ -1,18 +1,23 @@
 # spiralspider
 
 Gathers quest data for the worlds the Wizard101 data pack ([spiraldb](../spiraldb)) still lacks, from sources that
-permit it, and writes a spiraltools quest spec per quest and a gap report per world. It runs a plain headless
-Playwright Chromium inside a disposable Docker container: no host profile, no cookies, a fresh browser profile per
-run that is deleted afterwards, and no anti-detection or fingerprint changes of any kind.
+permit it, and writes a spiraltools quest spec per quest and a gap report per world. It is built on Scrapy: each
+source is a Scrapy spider, and `crawl` runs them one after the other in one Scrapy process. The live wiki is read
+through scrapy-playwright with a plain headless Chromium inside a disposable Docker container: no host profile, no
+cookies, a fresh browser context per crawl, and no anti-detection or fingerprint changes of any kind.
 
 ## The stop rule
 
 When a source refuses us, the spider stops asking it. A Cloudflare challenge page ("Just a moment...", "Performing
 security verification", "Verify you are human", a Turnstile widget), an HTTP 403, or a second HTTP 429 after one
-backoff of 60 seconds is recorded (source, URL, time, reason) in the gap report, and the crawl moves on to the next
-source. It is never worked around and never retried beyond that one backoff. A URL that the host's robots.txt
-disallows is never requested and is recorded the same way. Every request, robots.txt included, waits at least
-3 seconds after the one before.
+backoff of 60 seconds (the crawl pauses for it) is recorded (source, URL, time, reason) in the gap report, the
+source's spider is closed with nothing more requested, and the crawl moves on to the next source. It is never worked
+around and never retried beyond that one backoff. A URL that the host's robots.txt disallows is never requested and
+is recorded the same way. A server error (5xx) or a network error is retried once; nothing else is retried.
+
+Requests to a host go one at a time, at least 3 seconds apart, robots.txt included, under a plain user agent that
+names the spider; Scrapy's AutoThrottle is off. The rule is the `StopRule` downloader middleware
+(`spiralspider/middlewares.py`); the politeness settings are in `spiralspider/settings.py`.
 
 ## Sources
 
@@ -24,12 +29,16 @@ In priority order (`spiralspider sources` lists them):
 | `wiki_archive` | the Internet Archive's CDX index of `Quest:` pages and its category captures, then each quest's snapshot (`/web/<ts>id_/`, else the playback form); only for quests `wiki_live` did not parse | the same fields |
 | `spiraltracker` | `spiraltracker.com/<world>` | quest order, next quest, goal types |
 | `folio` | `wizard101folio.com/<world>-quest-tree` | quest order, next quest, goal types |
-| `forum_guide` | archived Wizard101 Central forum guides listed per world in `GUIDES` of `spiralspider/sources/forum_guide.py` (empty until a guide URL is added) | rewards |
+| `forum_guide` | archived Wizard101 Central forum guides listed per world in `GUIDES` of `spiralspider/sources/forum_guide.py` (Celestia so far) | rewards |
 
 The wiki pages are read with the parser of spiraltools (`spiraldb/tools/spiraltools/quests/archive.py`), imported from
 the sibling checkout `../spiraldb/tools`, or from the directory `SPIRALTOOLS` names. The spiraltracker, folio and
 forum guide readers assume a markup (list items in page order; bold quest names followed by "<n> XP" and "<n> Gold")
 that has not been checked against the live sites; their tests hold that assumption.
+
+Each source is a spider in `spiralspider/sources/`, named after the source. Only `wiki_live` goes through the browser
+(scrapy-playwright); the others use Scrapy's plain downloader and its HTTP cache. robots.txt is always fetched by the
+plain downloader.
 
 Each quest's records are merged field by field: a field takes the value of the highest-priority source that has one,
 and the spec's `source` names, per field, the source, URL and fetch time it came from.
@@ -48,7 +57,8 @@ docker compose run --rm spider gaps Celestia                     # print the las
 docker compose run --rm spider sources
 ```
 
-The build runs `playwright install --with-deps chromium` inside the image. Without compose:
+The image is Microsoft's Playwright image (Chromium included) with Scrapy and scrapy-playwright installed. Without
+compose:
 `docker build --build-context spiraltools=../spiraldb/tools -t spiralspider .`
 
 The world is one of the spiraltools world registry (`spiraldb/tools/spiraltools/worlds.py`); another name is refused
@@ -58,13 +68,15 @@ with the list of known worlds.
 
 Set `SPIDER_CDP_URL` to the DevTools endpoint of a browser you run yourself (for example a browser container started
 with `--remote-debugging-port=9222 --remote-debugging-address=0.0.0.0`, reachable from the spider container) and the
-spider attaches to it over the Chrome DevTools Protocol instead of launching its bundled Chromium:
+spider attaches to it over the Chrome DevTools Protocol (scrapy-playwright's `PLAYWRIGHT_CDP_URL`) instead of
+launching its bundled Chromium:
 
 ```
 SPIDER_CDP_URL=http://host.docker.internal:9222 docker compose run --rm spider crawl Celestia
 ```
 
-Profile, cookies and extensions stay in your browser; the spider only drives pages. Two ready-made ways to reach it:
+Profile, cookies and extensions stay in your browser; the spider opens its pages in a new context of it and only
+drives those. Two ready-made ways to reach it:
 
 - a browser on this host: start it with remote debugging and use `http://host.docker.internal:9222` (the compose file
   maps that name to the host). A browser with a window listens on 127.0.0.1 only, which the container cannot reach;
@@ -110,6 +122,10 @@ the UTC fetch time (`wiki_archive`: the capture's timestamp). `wiki_live` and `w
 `index-<world>.json` (quest name, page, zones, type), as spiraltools' archive cache does. A page already in the cache
 is not fetched again; delete it to fetch it anew. The provenance of each spec field is in the spec's `source`.
 
+`cache/httpcache/<source>/` is Scrapy's HTTP cache of the sources on the plain downloader (everything but
+`wiki_live`): every response they got, robots.txt and the CDX index included, except refusals and server errors.
+A response in it is not fetched again either; delete the folder to fetch everything anew.
+
 ## Gap report
 
 `out/<world>/gap-report.json`, printed at the end of a crawl and by `spiralspider gaps <World>`:
@@ -118,7 +134,8 @@ is not fetched again; delete it to fetch it anew. The provenance of each spec fi
 - `found`, `parsed`, `specs_ready`: quests listed by any source, quests with a record from any source, specs without
   a blocking gap;
 - `blocked_sources`: each refusal under the stop rule (source, URL, reason, time);
-- `errors`: a source that failed with another HTTP error while listing quests;
+- `errors`: a listing page (category, CDX index, quest listing, guide) a source got another HTTP error for; the
+  source goes on without it;
 - `needs_review`: per spec field, how many specs have it blocking or to review;
 - `missing_from_every_source`: quests some source listed that no source gave a record for.
 
@@ -128,6 +145,7 @@ is not fetched again; delete it to fetch it anew. The provenance of each spec fi
 python3 -I -m unittest discover tests
 ```
 
-No network and no browser: the challenge detector on saved challenge pages, the rate limiter and the stop rule, the
-merge priority, the spec writer against the schema, and each source's parser on a fixture. They need the spiraldb
-checkout beside this one (or `SPIRALTOOLS`).
+No network and no browser: the challenge detector on saved challenge pages; the stop rule and the page cache as
+middlewares on Scrapy responses; the politeness settings of every source and the `SPIDER_CDP_URL` mapping; the merge
+priority; the spec writer against the schema; and each source spider's callbacks on a fixture. They need Scrapy and
+scrapy-playwright installed (`pip install .`), and the spiraldb checkout beside this one (or `SPIRALTOOLS`).
