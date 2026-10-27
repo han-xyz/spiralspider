@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "CC-BY-NC-SA-4.0"}
 authors = [{name = "Han"}]
-dependencies = ["playwright>=1.47"]
+dependencies = ["scrapy>=2.19", "scrapy-playwright>=0.0.48", "playwright>=1.47"]
 
 [project.scripts]
 spiralspider = "spiralspider.cli:main"
