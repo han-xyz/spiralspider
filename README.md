@@ -107,6 +107,34 @@ The spider resolves the endpoint's host name to its address before connecting, b
 answers only a Host header that is an address or localhost. The challenge rule is unchanged:
 a challenge page, 403 or 429 storm is recorded and the crawl moves to the next source.
 
+## Assisted live fetch
+
+The live wiki puts a Cloudflare check in front of every automated client, so `crawl` stops there. `assist` fetches
+the wiki pages that a world's archive index has no snapshot of, in a browser window you can see. You solve the check
+in that window; the tool never clicks or solves it. It reads the window's title once a second until a wiki page shows,
+then loads one page every 3 seconds in that session. If the check comes back, it prints
+`solve the check in the browser window; waiting`, waits for you again and loads the same page once more. It runs on
+the host, because it needs a display. Install Playwright's Chromium once:
+
+```sh
+uv run playwright install chromium
+uv run spiralspider assist Celestia Zafaria      # or: --all-worlds
+```
+
+For each world, it reads `index-<world>.json` in spiraltools' archive cache (`--cache`, default
+`../spiraldb/.scratch/friends-server/task-A1/cache`). It fetches the entries with `missing_snapshot` that have no
+cached copy. If the index is missing or empty, it walks the world's quest categories on the live wiki and writes the
+index first, marking every entry `missing_snapshot`. Pages land in the same folder as `<timestamp>_live_<page>.html`.
+The live wiki answers 404 for some pages; those entries get `missing_live: true` and are not asked again. The index is
+written every 20 pages and on the way out, so Ctrl-C or a rerun picks up where it left off, and a page with a cached
+copy is skipped. The browser profile (`--profile`, default `.scratch/assist-profile`) keeps the clearance between
+runs. The command prints, per world, the pages wanted and to fetch, and at the end the pages fetched, 404 and
+remaining. spiraltools' archive parse then reads the live copies, from spiraldb:
+
+```sh
+python3 -I tools/spiraltools.py archive parse Celestia
+```
+
 ## Output
 
 `out/<world>/` (`--out` moves it):
@@ -163,5 +191,6 @@ uv run python -I -m unittest discover tests
 
 No network and no browser: the challenge detector on saved challenge pages; the stop rule and the page cache as
 middlewares on Scrapy responses; the politeness settings of every source and the `SPIDER_CDP_URL` mapping; the merge
-priority; the spec writer against the schema; and each source spider's callbacks on a fixture. `uv run` creates `.venv`
-from the lockfile on first use. They need the spiraldb checkout beside this one (or `SPIRALTOOLS`).
+priority; the spec writer against the schema; each source spider's callbacks on a fixture; and `assist`'s work list,
+challenge and 404 checks and index writes against a stand-in browser. `uv run` creates `.venv` from the lockfile on
+first use. They need the spiraldb checkout beside this one (or `SPIRALTOOLS`).
