@@ -44,8 +44,9 @@ tables), with the Dragonspyre pages of that day as their test fixtures; the foru
 quest names followed by "<n> XP" and "<n> Gold") that has not been checked against an archived guide.
 
 Each source is a spider in `spiralspider/sources/`, named after the source. Only `wiki_live` goes through the browser
-(scrapy-playwright); the others use Scrapy's plain downloader and its HTTP cache. robots.txt is always fetched by the
-plain downloader.
+(scrapy-playwright); the others use Scrapy's plain downloader and its HTTP cache. Each source fetches its
+robots.txt the way it fetches its pages, so `wiki_live` asks the browser for it too and the stop rule judges the wiki on
+the one client the crawl uses.
 
 Each quest's records are merged field by field: a field takes the value of the highest-priority source that has one,
 and the spec's `source` names, per field, the source, URL and fetch time it came from.

@@ -1,5 +1,6 @@
 import unittest
 
+from scrapy.utils.conf import build_component_list
 from scrapy.utils.test import get_crawler
 
 import context  # noqa: F401
@@ -28,6 +29,12 @@ class Politeness(unittest.TestCase):
             crawl = settings(spider=spider)
             self.assertEqual((crawl.getfloat("DOWNLOAD_DELAY"), crawl.getint("CONCURRENT_REQUESTS_PER_DOMAIN"),
                               crawl.getbool("ROBOTSTXT_OBEY")), (3.0, 1, True), spider.name)
+
+    def test_every_source_keeps_the_stop_rule_and_the_page_cache(self):
+        for spider in SOURCES.values():
+            enabled = build_component_list(settings(spider=spider).getwithbase("DOWNLOADER_MIDDLEWARES"))
+            self.assertIn("spiralspider.middlewares.StopRule", enabled, spider.name)
+            self.assertIn("spiralspider.middlewares.PageCache", enabled, spider.name)
 
     def test_robots_txt_is_obeyed(self):
         self.assertTrue(settings().getbool("ROBOTSTXT_OBEY"))

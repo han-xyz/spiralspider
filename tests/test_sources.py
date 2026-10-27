@@ -1,4 +1,3 @@
-import asyncio
 import json
 import os
 import tempfile
@@ -6,6 +5,9 @@ import unittest
 
 from scrapy.http import HtmlResponse, Request
 from scrapy.spidermiddlewares.httperror import HttpError
+from scrapy.utils.misc import build_from_crawler, load_object
+from scrapy.utils.conf import build_component_list
+from scrapy.utils.test import get_crawler
 from twisted.python.failure import Failure
 
 from context import fixture
@@ -13,6 +15,7 @@ from spiralspider.items import Listed, Record
 from spiralspider.merge import PRIORITY
 from spiralspider.middlewares import FETCHED
 from spiralspider.pipelines import Harvest
+from spiralspider.settings import crawl_settings
 from spiralspider.sources import folio, forum_guide, spiraltracker, wiki_archive, wiki_live
 
 DEEPER = "https://wiki.wizard101central.com/wiki/Quest:Deeper_and_Deeper"
@@ -29,12 +32,6 @@ def response(name, url="https://example.invalid/celestia"):
 
 def records(items):
     return {item.quest: item.fields for item in items if isinstance(item, Record)}
-
-
-def first_request(source):
-    async def first():
-        return await anext(aiter(source.start()))
-    return asyncio.run(first())
 
 
 class WikiSources(unittest.TestCase):
@@ -71,10 +68,41 @@ class WikiSources(unittest.TestCase):
                                             zone=None, part=0)
         self.assertIn("pagefrom=Gone+Fishing", request.url)
 
-    def test_only_the_live_wiki_goes_through_the_browser(self):
-        self.assertTrue(first_request(spider(wiki_live.WikiLive)).meta.get("playwright"))
-        for source in (wiki_archive.WikiArchive, spiraltracker.SpiralTracker, folio.Folio):
-            self.assertFalse(first_request(spider(source)).meta.get("playwright"))
+
+def own_middlewares(source):
+    crawler = get_crawler(source, crawl_settings(tempfile.mkdtemp(), {}))
+    paths = build_component_list(crawler.settings.getwithbase("DOWNLOADER_MIDDLEWARES"))
+    return [build_from_crawler(load_object(path), crawler) for path in paths if path.startswith("spiralspider.")]
+
+
+def as_sent(source, url, meta=None):
+    request = Request(url, meta=meta or {})
+    for middleware in own_middlewares(source):
+        middleware.process_request(request)
+    return request
+
+
+class Browser(unittest.TestCase):
+    ROBOTS = "https://wiki.wizard101central.com/robots.txt"
+
+    def test_live_wiki_robots_txt_goes_through_the_browser_like_its_pages(self):
+        robots = as_sent(wiki_live.WikiLive, self.ROBOTS, {"dont_obey_robotstxt": True})
+        self.assertTrue(robots.meta.get("playwright"))
+        self.assertEqual(robots.meta.get("playwright_page_goto_kwargs"), {"wait_until": "domcontentloaded"})
+        self.assertTrue(as_sent(wiki_live.WikiLive, DEEPER).meta.get("playwright"))
+
+    def test_no_other_source_goes_through_the_browser(self):
+        for source in (wiki_archive.WikiArchive, spiraltracker.SpiralTracker, folio.Folio, forum_guide.ForumGuide):
+            robots = as_sent(source, "https://web.archive.org/robots.txt", {"dont_obey_robotstxt": True})
+            self.assertNotIn("playwright", robots.meta, source.name)
+
+    def test_robots_txt_the_browser_rendered_is_read_from_its_pre(self):
+        rendered = HtmlResponse(self.ROBOTS, body=b"<html><head></head><body><pre>User-agent: *\nDisallow: /w/"
+                                                  b" &amp; more</pre></body></html>", encoding="utf-8",
+                                request=Request(self.ROBOTS))
+        [through] = [m for m in own_middlewares(wiki_live.WikiLive) if isinstance(m, wiki_live.ThroughBrowser)]
+        robots = through.process_response(rendered.request, rendered)
+        self.assertEqual(robots.text, "User-agent: *\nDisallow: /w/ & more")
 
 
 class ArchivedCategories(unittest.TestCase):

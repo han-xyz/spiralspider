@@ -11,6 +11,7 @@ import urllib.parse
 
 from scrapy.spidermiddlewares.httperror import HttpError
 
+from .. import settings
 from ..items import Listed, Record
 from ..middlewares import FETCHED
 from ..spiraltools_import import archive
@@ -20,6 +21,7 @@ HOST = "https://wiki.wizard101central.com"
 NEXT_PAGE = re.compile(r'<a href="([^"]*pagefrom=[^"]*)"[^>]*>next page</a>')
 PLAYWRIGHT_HANDLER = "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler"
 BROWSER = {"playwright": True, "playwright_page_goto_kwargs": {"wait_until": "domcontentloaded"}}
+PRE = re.compile(r"<pre[^>]*>(.*?)</pre>", re.S)
 
 
 def read_category(page):
@@ -30,6 +32,22 @@ def read_category(page):
     return subcategories, quests, next_url
 
 
+class ThroughBrowser:
+    """Every request of the spider goes through the browser, robots.txt included, so the stop rule judges the site on
+    the one client the crawl uses. The browser renders a robots.txt as a page with the text in a <pre>, which is read
+    back here for Scrapy's robots.txt parser."""
+
+    def process_request(self, request):
+        for key, value in BROWSER.items():
+            request.meta.setdefault(key, value)
+
+    def process_response(self, request, response):
+        rendered = PRE.search(response.text) if request.url.endswith("/robots.txt") else None
+        if rendered is None:
+            return response
+        return response.replace(body=html.unescape(rendered.group(1)).encode("utf-8"), encoding="utf-8")
+
+
 class WikiLive(SourceSpider):
     name = "wiki_live"
     # spiraltools' parser reads <timestamp>_live_<page>.html as a live page, an unprefixed name as an archive capture.
@@ -37,6 +55,11 @@ class WikiLive(SourceSpider):
     custom_settings = {
         "DOWNLOAD_HANDLERS": {"http": PLAYWRIGHT_HANDLER, "https": PLAYWRIGHT_HANDLER},
         "HTTPCACHE_ENABLED": False,
+        # A spider's DOWNLOADER_MIDDLEWARES replaces the crawl's, so the crawl's are repeated here.
+        "DOWNLOADER_MIDDLEWARES": {
+            **settings.DOWNLOADER_MIDDLEWARES,
+            "spiralspider.sources.wiki_live.ThroughBrowser": 500,
+        },
     }
 
     def __init__(self, *args, **kwargs):
@@ -46,11 +69,6 @@ class WikiLive(SourceSpider):
     async def start(self):
         for request in self.next_category():
             yield request
-
-    def page_request(self, key, url, callback, **kwargs):
-        request = super().page_request(key, url, callback, **kwargs)
-        request.meta.update(BROWSER)
-        return request
 
     def next_category(self):
         """The request for the next category of the walk, or, once the walk is done, the world's quest pages."""
