@@ -126,12 +126,12 @@ python3 -I tools/spiraltools.py archive parse Celestia --cache ../spiralspider/c
 
 ## Cache and provenance
 
-`cache/<source>/` (`--cache` moves it) holds every page fetched, as `<timestamp>_<page>.html`, the timestamp being
-the UTC fetch time (`wiki_archive`: the capture's timestamp); `wiki_live` names its pages
-`<timestamp>_live_<page>.html`. `wiki_live` and `wiki_archive` also write `index-<world>.json` (quest name, page,
-zones, type). This is the layout of spiraltools' cache on spiraldb's `feat/archive-parser-v2` branch, the one the
-image copies: its parser reads a `_live_` page as the live wiki's and an unprefixed one as an archive capture. A page already in the cache
-is not fetched again; delete it to fetch it anew. The provenance of each spec field is in the spec's `source`.
+`cache/<source>/` (`--cache` moves it) holds every page fetched, as `<timestamp>_<page>.html`, the timestamp being the
+UTC fetch time (`wiki_archive`: the capture's timestamp); `wiki_live` names its pages `<timestamp>_live_<page>.html`.
+`wiki_live` and `wiki_archive` also write `index-<world>.json` (quest name, page, zones, type). This is the layout of
+spiraltools' cache on spiraldb's `feat/archive-parser-v2` branch, the one the image copies: its parser reads a `_live_`
+page as the live wiki's and an unprefixed one as an archive capture. A page already in the cache is not fetched again;
+delete it to fetch it anew. The provenance of each spec field is in the spec's `source`.
 
 `cache/httpcache/<source>/` is Scrapy's HTTP cache of the sources on the plain downloader (everything but
 `wiki_live`): every response they got, robots.txt and the CDX index included, except refusals and server errors.
