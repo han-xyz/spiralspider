@@ -15,6 +15,9 @@ AUTOTHROTTLE_ENABLED = False
 RETRY_TIMES = 1
 RETRY_HTTP_CODES = [500, 502, 503, 504, 522, 524]
 SPIDER_BACKOFF = 60.0
+# Hosts that replay other sites' pages under /web/<timestamp>/<url>: the status and page of a replay are the captured
+# site's, so the stop rule does not read them as this host refusing us.
+REPLAY_HOSTS = ["web.archive.org"]
 HTTPCACHE_ENABLED = True
 HTTPCACHE_IGNORE_HTTP_CODES = RETRY_HTTP_CODES
 # Responses pass these from the highest number down. The stop rule reads the decompressed page and drops a refusal

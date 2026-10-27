@@ -1,7 +1,10 @@
 """The stop rule and the page cache, as Scrapy downloader middlewares."""
 import asyncio
 import datetime
+import glob
 import os
+import re
+import urllib.parse
 
 from scrapy.exceptions import IgnoreRequest
 from scrapy.http import HtmlResponse, TextResponse
@@ -16,6 +19,17 @@ CAPTURE = "spiralspider_capture"
 BACKED_OFF = "spiralspider_backed_off"
 # The message of the IgnoreRequest Scrapy's RobotsTxtMiddleware raises for a URL robots.txt disallows.
 ROBOTS_REFUSAL = "Forbidden by robots.txt"
+REPLAY_PATH = re.compile(r"/web/\d+[a-z_]*/.")
+BACKOFFS = 1
+REPLAY_BACKOFFS = 5
+
+
+def cached_copies(cache, key):
+    """(timestamp, path) of every cached copy of a page, newest first."""
+    name = f"_{archive.file_name(key)}.html"
+    paths = [path for path in glob.glob(os.path.join(cache, f"[0-9]*{glob.escape(name)}"))
+             if os.path.basename(path)[14:] == name]
+    return sorted(((os.path.basename(path)[:14], path) for path in paths), reverse=True)
 
 
 def refusal(source, url, reason):
@@ -26,11 +40,16 @@ def refusal(source, url, reason):
 class StopRule:
     """A 403, a challenge page, a second 429 after one backoff, or a URL robots.txt disallows blocks the spider's
     source: the refusal goes into the harvest, the spider is closed and nothing more is requested for it. It is never
-    worked around. A first 429 pauses the crawl for SPIDER_BACKOFF seconds, then asks once more."""
+    worked around. A first 429 pauses the crawl for SPIDER_BACKOFF seconds, then asks once more.
+
+    A replay (a /web/<timestamp>/<url> page of a REPLAY_HOSTS host) carries the status and page the captured site gave
+    then: its 403 or challenge page is an unusable capture, passed on for the spider to try another. Only the replay
+    host's own 429 counts there, backed off REPLAY_BACKOFFS times before it blocks."""
 
     def __init__(self, crawler):
         self.crawler = crawler
         self.backoff = crawler.settings.getfloat("SPIDER_BACKOFF")
+        self.replay_hosts = set(crawler.settings.getlist("REPLAY_HOSTS"))
         self.blocked = False
         self.closing = None
 
@@ -43,11 +62,15 @@ class StopRule:
             raise IgnoreRequest(f"{self.crawler.spider.name} is blocked")
 
     async def process_response(self, request, response):
+        is_replay = self.is_replay(request.url)
         if response.status == 429:
-            if request.meta.get(BACKED_OFF):
-                self.block(request, "HTTP 429 again after one backoff")
+            backoffs = request.meta.get(BACKED_OFF, 0)
+            if backoffs >= (REPLAY_BACKOFFS if is_replay else BACKOFFS):
+                self.block(request, f"HTTP 429 again after {backoffs} backoff(s)")
             await self.back_off()
-            return request.replace(dont_filter=True, meta={**request.meta, BACKED_OFF: True})
+            return request.replace(dont_filter=True, meta={**request.meta, BACKED_OFF: backoffs + 1})
+        if is_replay:
+            return response
         if response.status == 403:
             self.block(request, "HTTP 403")
         marker = challenge_marker(response.text) if isinstance(response, TextResponse) else None
@@ -58,6 +81,10 @@ class StopRule:
     def process_exception(self, request, exception):
         if isinstance(exception, IgnoreRequest) and str(exception) == ROBOTS_REFUSAL:
             self.block(request, "robots.txt disallows it")
+
+    def is_replay(self, url):
+        parts = urllib.parse.urlsplit(url)
+        return parts.hostname in self.replay_hosts and REPLAY_PATH.match(parts.path) is not None
 
     async def back_off(self):
         self.crawler.engine.pause()
@@ -80,8 +107,8 @@ class StopRule:
 class PageCache:
     """A source's pages in the layout of spiraltools' archive cache. A request whose meta[PAGE] names a page the spider
     fetched before is answered from <cache>/<timestamp>_<page>.html, the newest one, or the one of the timestamp in
-    meta[CAPTURE]; a page fetched now (status 200, past the stop rule) is written there. Either way the response's
-    meta[FETCHED] is that timestamp."""
+    meta[CAPTURE]; a page fetched now (status 200, past the stop rule, one the spider can use) is written there. Either
+    way the response's meta[FETCHED] is that timestamp."""
 
     def __init__(self, crawler):
         self.crawler = crawler
@@ -99,7 +126,7 @@ class PageCache:
             path = os.path.join(cache, f"{stamp}_{archive.file_name(key)}.html")
             hit = (stamp, path) if os.path.exists(path) else None
         else:
-            hit = archive.cached(cache, key)
+            hit = next(iter(cached_copies(cache, key)), None)
         if not hit:
             return None
         with open(hit[1], encoding="utf-8") as f:
@@ -109,9 +136,9 @@ class PageCache:
 
     def process_response(self, request, response):
         key = request.meta.get(PAGE)
-        if key is None or FETCHED in request.meta or response.status != 200:
-            return response
         spider = self.crawler.spider
+        if key is None or FETCHED in request.meta or response.status != 200 or not spider.is_usable(response):
+            return response
         stamp = spider.fetched_stamp(response)
         os.makedirs(spider.cache, exist_ok=True)
         with open(os.path.join(spider.cache, f"{stamp}_{archive.file_name(key)}.html"), "w", encoding="utf-8") as f:

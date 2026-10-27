@@ -120,6 +120,43 @@ class StopRuleTest(unittest.TestCase):
         self.assertEqual(set(self.blocked()[0]), {"source", "url", "reason", "at"})
 
 
+class ReplayTest(unittest.TestCase):
+    CAPTURE = ("https://web.archive.org/web/20260706213806id_/"
+               "https://wiki.wizard101central.com/wiki/Quest:Training_Wings")
+
+    def setUp(self):
+        self.crawler = crawler_for(tempfile.mkdtemp())
+        self.rule = StopRule.from_crawler(self.crawler)
+
+    def replay(self, status, body="", request=None):
+        request = request or Request(self.CAPTURE)
+        return HtmlResponse(self.CAPTURE, status=status, body=body, encoding="utf-8", request=request)
+
+    def test_replayed_403_is_an_unusable_capture_not_a_refusal(self):
+        response = self.replay(403, "Forbidden")
+        self.assertIs(through(self.rule, response), response)
+        self.assertEqual(self.crawler.spider.harvest.blocked, [])
+
+    def test_replayed_challenge_page_is_an_unusable_capture_not_a_refusal(self):
+        response = self.replay(200, fixture("challenge_turnstile.html"))
+        self.assertIs(through(self.rule, response), response)
+        self.assertEqual(self.crawler.spider.harvest.blocked, [])
+
+    def test_archive_429_is_retried_five_times_then_blocks(self):
+        request = Request(self.CAPTURE)
+        for _ in range(5):
+            request = through(self.rule, self.replay(429, request=request))
+            self.assertIsInstance(request, Request)
+        with self.assertRaises(IgnoreRequest):
+            through(self.rule, self.replay(429, request=request))
+        self.assertIn("429", self.crawler.spider.harvest.blocked[0]["reason"])
+
+    def test_403_from_the_cdx_still_blocks(self):
+        lookup = "https://web.archive.org/cdx/search/cdx?url=wiki.wizard101central.com/wiki/Quest:Training_Wings"
+        with self.assertRaises(IgnoreRequest):
+            through(self.rule, HtmlResponse(lookup, status=403, body=b"", request=Request(lookup)))
+
+
 class PageCacheTest(unittest.TestCase):
     def setUp(self):
         self.cache = tempfile.mkdtemp()
@@ -143,6 +180,12 @@ class PageCacheTest(unittest.TestCase):
             f.write("<html>Wayback Machine</html>")
         asked = Request(WIKI, meta={PAGE: "Category:Celestia_Quests", CAPTURE: "20250101000000"})
         self.assertIsNone(self.pages.process_request(asked))
+
+    def test_page_the_spider_cannot_use_is_not_cached(self):
+        self.pages.crawler.spider.is_usable = lambda response: False
+        response = respond(200, request=Request(WIKI, meta={PAGE: "Quest:Deeper_and_Deeper"}))
+        self.pages.process_response(response.request, response)
+        self.assertEqual(os.listdir(self.cache), [])
 
     def test_error_page_is_not_cached(self):
         response = respond(404, request=Request(WIKI, meta={PAGE: "Quest:Deeper_and_Deeper"}))

@@ -41,6 +41,10 @@ class SourceSpider(scrapy.Spider):
         """A request for the page `key` (its file name in the cache), answered from the cache when it is there."""
         return scrapy.Request(url, callback=callback, meta={PAGE: key, **(meta or {})}, **kwargs)
 
+    def is_usable(self, response):
+        """Whether a page fetched with status 200 is one the source can read, and so worth caching."""
+        return True
+
     def fetched_stamp(self, response):
         """The timestamp a page fetched now is cached and cited under: the UTC time of the fetch."""
         return datetime.datetime.now(datetime.timezone.utc).strftime(STAMP)
