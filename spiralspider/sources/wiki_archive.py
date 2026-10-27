@@ -9,11 +9,11 @@ import glob
 import json
 import os
 import re
-import types
 import urllib.parse
 from typing import NamedTuple
 
 import scrapy
+from scrapy.exceptions import IgnoreRequest
 from scrapy.spidermiddlewares.httperror import HttpError
 
 from ..items import Listed, Record
@@ -23,13 +23,29 @@ from . import CategoryWalk, SourceSpider, provenance, quest_name
 from .wiki_live import HOST, read_category
 
 CAPTURE_STAMP = re.compile(r"/web/(\d{14})")
-CATEGORY_CDX = ("https://web.archive.org/cdx/search/cdx?url=wiki.wizard101central.com/{}"
-                "&fl=timestamp,statuscode&filter=statuscode:200")
+CDX_LOOKUP = ("https://web.archive.org/cdx/search/cdx?url=wiki.wizard101central.com/{}"
+              "&fl=timestamp,statuscode&filter=statuscode:200")
+NEWEST_THREE = "&limit=-3"
+# The CDX server answers 503 under load; a lookup is small, so it is asked again more often than a page.
+CDX_RETRIES = 3
 PAGE_SAFE = ":_()/,!"
 
 
 def wayback_url(at, raw, page):
     return f"{archive.ARCHIVE}{at}{'id_' if raw else ''}/{archive.WIKI}{urllib.parse.quote(page, safe=PAGE_SAFE)}"
+
+
+def cdx_lookup(target, callback, errback, query="", **kwargs):
+    """The CDX request for the captures with status 200 of `target`, a path and query on the wiki host; `query` adds
+    CDX parameters."""
+    url = CDX_LOOKUP.format(urllib.parse.quote(target, safe=PAGE_SAFE + "%")) + query
+    return scrapy.Request(url, callback=callback, errback=errback, meta={"max_retry_times": CDX_RETRIES}, **kwargs)
+
+
+def capture_stamps(answer):
+    """The timestamps of the captures with status 200 in a CDX answer, oldest first."""
+    captures = [line.split() for line in answer.splitlines()]
+    return [fields[0] for fields in captures if fields[1:2] == ["200"]]
 
 
 def is_category_page(page):
@@ -66,6 +82,7 @@ class WikiArchive(SourceSpider):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.walk = CategoryWalk(self.registered.category)
+        self.captures = {}
 
     async def start(self):
         for request in self.next_category():
@@ -76,10 +93,10 @@ class WikiArchive(SourceSpider):
         return CAPTURE_STAMP.search(response.url).group(1)
 
     def next_category(self):
-        """The next category of the walk, or, once the walk is done, the request for the CDX index of quest pages."""
+        """The next category of the walk, or, once the walk is done, the CDX lookups of its quest pages."""
         following = self.walk.next()
         if following is None:
-            yield scrapy.Request(archive.CDX, callback=self.read_index, errback=self.listing_failed)
+            yield from self.next_lookup()
             return
         category, zone = following
         yield from self.category_part(category, zone, 0, "wiki/" + urllib.parse.quote(category, safe=PAGE_SAFE))
@@ -95,13 +112,10 @@ class WikiArchive(SourceSpider):
                 yield from self.read_part(page, part)
                 return
             cached.append(stamp)
-        lookup = CATEGORY_CDX.format(urllib.parse.quote(target, safe=PAGE_SAFE + "%"))
-        yield scrapy.Request(lookup, callback=self.read_captures, errback=self.category_failed,
-                             cb_kwargs={"part": part, "cached": cached})
+        yield cdx_lookup(target, self.read_captures, self.category_failed, cb_kwargs={"part": part, "cached": cached})
 
     def read_captures(self, response, part, cached):
-        captures = [line.split() for line in response.text.splitlines()]
-        stamps = [fields[0] for fields in captures if fields[1:2] == ["200"]]
+        stamps = capture_stamps(response.text)
         yield from self.next_capture(part, [stamp for stamp in reversed(stamps) if stamp not in cached])
 
     def next_capture(self, part, stamps):
@@ -142,13 +156,34 @@ class WikiArchive(SourceSpider):
             self.listing_failed(failure)
             yield from self.next_category()
 
-    def read_index(self, response):
-        archived = archive.archived_quests(types.SimpleNamespace(get=lambda url: (response.url, response.body)))
+    def next_lookup(self):
+        """The CDX lookup of the next quest page of the walk; once all are looked up, the index and the snapshots."""
+        pending = [page for page in sorted(self.walk.quests) if page not in self.captures]
+        if not pending:
+            yield from self.write_index()
+            return
+        target = "wiki/" + urllib.parse.quote(pending[0], safe=PAGE_SAFE)
+        yield cdx_lookup(target, self.read_lookup, self.lookup_failed, NEWEST_THREE, cb_kwargs={"page": pending[0]})
+
+    def read_lookup(self, response, page):
+        stamps = capture_stamps(response.text)
+        self.captures[page] = stamps[-1] if stamps else None
+        yield from self.next_lookup()
+
+    def lookup_failed(self, failure):
+        """A lookup that failed after its retries leaves that quest without a snapshot and the source goes on; a lookup
+        the stop rule dropped ends the source."""
+        if failure.check(IgnoreRequest) and not failure.check(HttpError):
+            return
+        self.captures[failure.request.cb_kwargs["page"]] = None
+        yield from self.next_lookup()
+
+    def write_index(self):
         index = []
         for page in sorted(self.walk.quests):
             entry = {"name": quest_name(page), "page": page}
-            if page in archived:
-                entry["timestamp"] = archived[page]
+            if self.captures[page]:
+                entry["timestamp"] = self.captures[page]
             else:
                 entry["missing_snapshot"] = True
             entry["zones"] = sorted(self.walk.quests[page]["zones"])

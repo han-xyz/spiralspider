@@ -1,9 +1,12 @@
 import asyncio
+import json
 import os
 import tempfile
 import unittest
 
 from scrapy.http import HtmlResponse, Request
+from scrapy.spidermiddlewares.httperror import HttpError
+from twisted.python.failure import Failure
 
 from context import fixture
 from spiralspider.items import Listed, Record
@@ -109,6 +112,45 @@ class ArchivedCategories(unittest.TestCase):
         [lookup] = self.archive.read_capture(response("category_celestia.html", newest.url), **newest.cb_kwargs)
         self.assertIn("url=wiki.wizard101central.com/wiki/index.php%3Ftitle%3DCategory:Celestia_Quests"
                       "%26pagefrom%3DGone%2BFishing", lookup.url)
+
+
+class ArchivedQuests(unittest.TestCase):
+    def setUp(self):
+        self.archive = spider(wiki_archive.WikiArchive)
+        self.archive.walk.queue = []
+        self.archive.walk.quests = {page: {"zones": {"The Commons"}, "types": set()}
+                                    for page in ("Quest:Bad_Blood", "Quest:Crystal-Matic")}
+        [self.first] = self.archive.next_category()
+
+    def answer(self, lookup):
+        return list(self.archive.read_lookup(response("cdx_quest_bad_blood.txt", lookup.url), **lookup.cb_kwargs))
+
+    def refuse(self, lookup):
+        failure = Failure(HttpError(HtmlResponse(lookup.url, status=503, body=b"", request=lookup)))
+        failure.request = lookup
+        return list(self.archive.lookup_failed(failure))
+
+    def index(self):
+        with open(os.path.join(self.archive.cache, "index-celestia.json"), encoding="utf-8") as f:
+            return {entry["page"]: entry for entry in json.load(f)}
+
+    def test_each_quest_is_looked_up_on_its_own_with_three_retries(self):
+        self.assertIn("url=wiki.wizard101central.com/wiki/Quest:Bad_Blood", self.first.url)
+        self.assertIn("filter=statuscode:200", self.first.url)
+        self.assertIn("limit=-3", self.first.url)
+        self.assertEqual(self.first.meta["max_retry_times"], 3)
+
+    def test_quest_is_indexed_with_its_newest_capture(self):
+        [second] = self.answer(self.first)
+        self.answer(second)
+        self.assertEqual(self.index()["Quest:Bad_Blood"]["timestamp"], "20260105000000")
+
+    def test_quest_whose_lookup_fails_is_missing_its_snapshot_not_the_source(self):
+        [second] = self.refuse(self.first)
+        items = self.answer(second)
+        self.assertTrue(self.index()["Quest:Bad_Blood"]["missing_snapshot"])
+        self.assertEqual([item.quest for item in items if isinstance(item, Listed)], ["Crystal-Matic"])
+        self.assertIn("Quest:Crystal-Matic", [item for item in items if isinstance(item, Request)][0].url)
 
 
 class ListingSources(unittest.TestCase):
