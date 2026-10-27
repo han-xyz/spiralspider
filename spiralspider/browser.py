@@ -136,6 +136,14 @@ def cdp_url(environ=None, resolve=socket.gethostbyname):
     return urllib.parse.urlunsplit(parts)
 
 
+def playwright_settings(environ=None, resolve=socket.gethostbyname):
+    """scrapy-playwright's settings: the browser at SPIDER_CDP_URL when it is set, else a headless Chromium of its own."""
+    endpoint = cdp_url(environ, resolve)
+    if endpoint:
+        return {"PLAYWRIGHT_CDP_URL": endpoint}
+    return {"PLAYWRIGHT_BROWSER_TYPE": "chromium", "PLAYWRIGHT_LAUNCH_OPTIONS": {"headless": True}}
+
+
 def _is_address(host):
     try:
         ipaddress.ip_address(host)

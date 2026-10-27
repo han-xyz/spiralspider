@@ -10,6 +10,9 @@ import datetime
 import os
 from typing import NamedTuple
 
+import scrapy
+
+from .. import spiraltools_import
 from ..spiraltools_import import archive
 
 STAMP = "%Y%m%d%H%M%S"
@@ -42,3 +45,17 @@ def fetch_cached(gate, source, cache, key, url):
     with open(os.path.join(cache, f"{stamp}_{archive.file_name(key)}.html"), "w", encoding="utf-8") as f:
         f.write(response.text)
     return stamp, response.text
+
+
+class SourceSpider(scrapy.Spider):
+    """A source as a Scrapy spider named after it, given the world's name, the source's cache folder and the crawl's
+    harvest. Every request it makes passes the stop rule; a page it requests with meta[PAGE] is cached (PageCache)."""
+
+    def __init__(self, world, cache, harvest, **kwargs):
+        super().__init__(**kwargs)
+        self.registered = spiraltools_import.world(world)
+        self.cache, self.harvest = cache, harvest
+
+    def fetched_stamp(self, response):
+        """The timestamp a page fetched now is cached and cited under: the UTC time of the fetch."""
+        return datetime.datetime.now(datetime.timezone.utc).strftime(STAMP)
