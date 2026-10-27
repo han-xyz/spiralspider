@@ -1,0 +1,6 @@
+.git
+.scratch
+out
+cache
+tests
+**/__pycache__

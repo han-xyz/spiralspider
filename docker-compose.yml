@@ -1,0 +1,10 @@
+services:
+  spider:
+    build:
+      context: .
+      additional_contexts:
+        spiraltools: ../spiraldb/tools
+    volumes:
+      - ./out:/work/out
+      - ./cache:/work/cache
+    shm_size: "1gb"
