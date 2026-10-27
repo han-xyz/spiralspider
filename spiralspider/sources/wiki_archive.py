@@ -5,6 +5,9 @@ The walk, the index and the cache follow spiraltools' own (`quests/archive.py`),
 wiki's redirects and refusals as captures, replayed with the wiki's status or as a "Wayback Machine" page of its own,
 so a page is read from a capture with status 200 that is usable: a category page that lists members, a quest page
 with its infobox and no challenge. The captures are tried newest first.
+
+When the world's quest category has no usable capture, the walk goes on from its Storyline, Side and Instance
+subcategories, and the quests the world's Quest Tree page links to are added, as spiraltools' archive walk does.
 """
 import json
 import os
@@ -50,7 +53,18 @@ def capture_stamps(answer):
 
 
 def is_category_page(page):
-    return 'id="mw-pages"' in page or 'id="mw-subcategories"' in page
+    """A category page that lists subcategories or quest pages."""
+    has_lists = 'id="mw-pages"' in page or 'id="mw-subcategories"' in page
+    return has_lists and any(archive.category_members(page))
+
+
+def content_quests(page, key):
+    """The Quest: pages the content of a page links to, without the page itself and other quest trees."""
+    start = page.find('id="mw-content-text"')
+    end = page.find('class="printfooter"', max(start, 0))
+    block = page[max(start, 0):end if end >= 0 else None]
+    found = [archive.page_key(m) for m in re.findall(r'href="[^"]*/wiki/(Quest:[^"#?]+)"', block)]
+    return list(dict.fromkeys(q for q in found if q != key and not q.endswith("_Quest_Tree")))
 
 
 def is_quest_page(page):
@@ -125,7 +139,7 @@ class WikiArchive(SourceSpider):
         if not stamps:
             self.logger.info("%s: no capture lists its members; its pages are listed only through other categories",
                              part.key)
-            yield from self.next_category()
+            yield from self.without_listing(part)
             return
         url = f"{archive.ARCHIVE}{stamps[0]}id_/{HOST}/{part.target}"
         yield self.page_request(part.key, url, self.read_capture, errback=self.capture_failed,
@@ -156,7 +170,45 @@ class WikiArchive(SourceSpider):
         """The CDX lookup of a category failed: recorded, and the walk goes on without that category."""
         if failure.check(HttpError):
             self.listing_failed(failure)
+            yield from self.without_listing(failure.request.cb_kwargs["part"])
+
+    def without_listing(self, part):
+        """The walk goes on without a category page; for the world's quest category, from its typed subcategories and
+        its Quest Tree page instead."""
+        if part.category != self.walk.root or part.number:
             yield from self.next_category()
+            return
+        wiki = self.registered.wiki
+        self.walk.queue += [(f"Category:{wiki}_{kind.title()}_Quests", None) for kind in archive.QUEST_TYPES]
+        key = f"Quest:{wiki}_Quest_Tree"
+        yield cdx_lookup("wiki/" + urllib.parse.quote(key, safe=PAGE_SAFE), self.read_tree_captures,
+                         self.tree_failed, cb_kwargs={"key": key})
+
+    def read_tree_captures(self, response, key):
+        yield from self.next_tree(key, capture_stamps(response.text)[::-1])
+
+    def next_tree(self, key, stamps):
+        """The request for the newest capture of the Quest Tree page left; with none left, the walk goes on."""
+        if not stamps:
+            yield from self.next_category()
+            return
+        url = f"{archive.ARCHIVE}{stamps[0]}id_/{archive.WIKI}{urllib.parse.quote(key, safe=PAGE_SAFE)}"
+        yield scrapy.Request(url, callback=self.read_tree, errback=self.tree_failed,
+                             cb_kwargs={"key": key, "stamps": stamps[1:]})
+
+    def read_tree(self, response, key, stamps):
+        quests = content_quests(response.text, key) if challenge_marker(response.text) is None else []
+        if not quests:
+            yield from self.next_tree(key, stamps)
+            return
+        for quest in quests:
+            self.walk.quests.setdefault(quest, {"zones": set(), "types": set()})
+        yield from self.next_category()
+
+    def tree_failed(self, failure):
+        if failure.check(HttpError):
+            asked = failure.request.cb_kwargs
+            yield from self.next_tree(asked["key"], asked.get("stamps", []))
 
     def next_lookup(self):
         """The CDX lookup of the next quest page of the walk; once all are looked up, the index and the snapshots."""

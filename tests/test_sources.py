@@ -142,6 +142,44 @@ class ArchivedCategories(unittest.TestCase):
                       "%26pagefrom%3DGone%2BFishing", lookup.url)
 
 
+class RootWithoutCapture(unittest.TestCase):
+    TYPED = ["Category:Celestia_Storyline_Quests", "Category:Celestia_Side_Quests", "Category:Celestia_Instance_Quests"]
+
+    def setUp(self):
+        self.archive = spider(wiki_archive.WikiArchive)
+        [lookup] = self.archive.next_category()
+        [self.tree_lookup] = self.archive.read_captures(response("cdx_category_403.txt", lookup.url),
+                                                        **lookup.cb_kwargs)
+
+    def test_typed_subcategories_are_walked_instead(self):
+        self.assertEqual([category for category, _ in self.archive.walk.queue], self.TYPED)
+
+    def test_quest_tree_page_is_looked_up_for_more_titles(self):
+        self.assertIn("url=wiki.wizard101central.com/wiki/Quest:Celestia_Quest_Tree", self.tree_lookup.url)
+
+    def test_quest_tree_adds_the_quests_its_content_links_to(self):
+        [capture] = self.archive.read_tree_captures(response("cdx_category_celestia.txt", self.tree_lookup.url),
+                                                    **self.tree_lookup.cb_kwargs)
+        [next_lookup] = self.archive.read_tree(response("quest_tree_celestia.html", capture.url), **capture.cb_kwargs)
+        self.assertEqual(sorted(self.archive.walk.quests),
+                         ["Quest:Door_to_the_Stars", "Quest:Gone_Fishing", "Quest:Survivors"])
+        self.assertIn("Category:Celestia_Storyline_Quests", next_lookup.url)
+
+    def test_typed_subcategory_gives_its_members_a_type_and_no_zone(self):
+        part = wiki_archive.Part(self.TYPED[0], None, 0, "wiki/" + self.TYPED[0])
+        list(self.archive.read_part(fixture("category_celestia_storyline.html"), part))
+        self.assertEqual(self.archive.walk.quests["Quest:Deeper_and_Deeper"], {"zones": set(), "types": {"storyline"}})
+
+    def test_root_page_that_lists_nothing_counts_as_no_capture(self):
+        archive = spider(wiki_archive.WikiArchive)
+        [lookup] = archive.next_category()
+        [capture] = archive.read_captures(response("cdx_category_celestia.txt", lookup.url), **lookup.cb_kwargs)
+        empty = '<div id="mw-pages"><h2>Pages in category</h2></div><div class="printfooter"></div>'
+        [next_capture] = archive.read_capture(HtmlResponse(capture.url, body=empty, encoding="utf-8",
+                                                           request=capture), **capture.cb_kwargs)
+        self.assertIn("/web/20250101000000id_/", next_capture.url)
+
+
 class ArchivedQuests(unittest.TestCase):
     def setUp(self):
         self.archive = spider(wiki_archive.WikiArchive)

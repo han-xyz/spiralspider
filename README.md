@@ -32,7 +32,7 @@ In priority order (`spiralspider sources` lists them):
 | source | what it reads | gives |
 | --- | --- | --- |
 | `wiki_live` | `wiki.wizard101central.com`: `Category:<World>_Quests`, its subcategories and next pages, then each `Quest:<Name>` page | every field the wiki page has |
-| `wiki_archive` | the Internet Archive's captures of the world's category pages (the newest raw capture with status 200 that lists members, found through the CDX), a CDX lookup per quest page for its newest captures, then each quest's snapshot (`/web/<ts>id_/`, else the playback form); only for quests `wiki_live` did not parse | the same fields |
+| `wiki_archive` | the Internet Archive's captures of the world's category pages (the newest raw capture with status 200 that lists members, found through the CDX; when the world's category has none, its Storyline, Side and Instance subcategories and the quests its `Quest:<World>_Quest_Tree` page links to), a CDX lookup per quest page for its newest captures, then each quest's snapshot (`/web/<ts>id_/`, else the playback form); only for quests `wiki_live` did not parse | the same fields |
 | `spiraltracker` | `spiraltracker.com/<world>` | quest order, next quest, goal types |
 | `folio` | `wizard101folio.com/<world>-quest-tree` | quest order, next quest, goal types |
 | `forum_guide` | archived Wizard101 Central forum guides listed per world in `GUIDES` of `spiralspider/sources/forum_guide.py` (Celestia so far) | rewards |
