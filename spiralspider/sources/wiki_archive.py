@@ -1,27 +1,58 @@
 """The Internet Archive's copies of the wiki: the CDX index and the category captures, then each quest's snapshot.
 
 The walk, the index and the cache follow spiraltools' own (`quests/archive.py`), so
-`spiraltools.py archive parse <World> --cache <cache>/wiki_archive` reads the same cache.
+`spiraltools.py archive parse <World> --cache <cache>/wiki_archive` reads the same cache. A category page (and each of
+its next pages) is read from the newest capture with status 200 that lists members: the archive also records the
+wiki's redirects and refusals as captures, and serves them as a "Wayback Machine" page of its own.
 """
+import glob
 import json
 import os
 import re
 import types
 import urllib.parse
+from typing import NamedTuple
 
 import scrapy
 from scrapy.spidermiddlewares.httperror import HttpError
 
 from ..items import Listed, Record
-from ..middlewares import FETCHED
+from ..middlewares import CAPTURE, FETCHED
 from ..spiraltools_import import archive
 from . import CategoryWalk, SourceSpider, provenance, quest_name
+from .wiki_live import HOST, read_category
 
-CAPTURE = re.compile(r"/web/(\d{14})")
+CAPTURE_STAMP = re.compile(r"/web/(\d{14})")
+CATEGORY_CDX = ("https://web.archive.org/cdx/search/cdx?url=wiki.wizard101central.com/{}"
+                "&fl=timestamp,statuscode&filter=statuscode:200")
+PAGE_SAFE = ":_()/,!"
 
 
 def wayback_url(at, raw, page):
-    return f"{archive.ARCHIVE}{at}{'id_' if raw else ''}/{archive.WIKI}{urllib.parse.quote(page, safe=':_()/,!')}"
+    return f"{archive.ARCHIVE}{at}{'id_' if raw else ''}/{archive.WIKI}{urllib.parse.quote(page, safe=PAGE_SAFE)}"
+
+
+def is_category_page(page):
+    return 'id="mw-pages"' in page or 'id="mw-subcategories"' in page
+
+
+def cached_copies(cache, key):
+    """(timestamp, path) of every cached capture of a page, newest first."""
+    paths = sorted(glob.glob(os.path.join(cache, f"[0-9]*_{glob.escape(archive.file_name(key))}.html")), reverse=True)
+    return [(os.path.basename(path)[:14], path) for path in paths]
+
+
+class Part(NamedTuple):
+    """A page of a category: `number` 0 is the category page, the next ones its "next page" links. `target` is the
+    page's path and query on the wiki host."""
+    category: str
+    zone: str | None
+    number: int
+    target: str
+
+    @property
+    def key(self):
+        return f"{self.category}_part{self.number}" if self.number else self.category
 
 
 def snapshots(entry):
@@ -42,38 +73,74 @@ class WikiArchive(SourceSpider):
 
     def fetched_stamp(self, response):
         """The capture's timestamp, as spiraltools caches it."""
-        return CAPTURE.search(response.url).group(1)
+        return CAPTURE_STAMP.search(response.url).group(1)
 
     def next_category(self):
-        """The request for the next category of the walk, or, once the walk is done, the CDX index."""
+        """The next category of the walk, or, once the walk is done, the request for the CDX index of quest pages."""
         following = self.walk.next()
         if following is None:
             yield scrapy.Request(archive.CDX, callback=self.read_index, errback=self.listing_failed)
             return
-        yield self.category_request(*following, year=0)
+        category, zone = following
+        yield from self.category_part(category, zone, 0, "wiki/" + urllib.parse.quote(category, safe=PAGE_SAFE))
 
-    def category_request(self, category, zone, year):
-        """The category's capture nearest the year archive.CATEGORY_YEARS[year]."""
-        url = wayback_url(archive.CATEGORY_YEARS[year], False, category)
-        return self.page_request(category, url, self.read_category_page, errback=self.category_failed,
-                                 cb_kwargs={"category": category, "zone": zone, "year": year})
+    def category_part(self, category, zone, number, target):
+        """A category page from the newest cached capture that lists members, else the CDX lookup of its captures."""
+        part = Part(category, zone, number, target)
+        cached = []
+        for stamp, path in cached_copies(self.cache, part.key):
+            with open(path, encoding="utf-8") as f:
+                page = f.read()
+            if is_category_page(page):
+                yield from self.read_part(page, part)
+                return
+            cached.append(stamp)
+        lookup = CATEGORY_CDX.format(urllib.parse.quote(target, safe=PAGE_SAFE + "%"))
+        yield scrapy.Request(lookup, callback=self.read_captures, errback=self.category_failed,
+                             cb_kwargs={"part": part, "cached": cached})
 
-    def read_category_page(self, response, category, zone, year):
-        self.walk.add(category, zone, *archive.category_members(response.text))
+    def read_captures(self, response, part, cached):
+        captures = [line.split() for line in response.text.splitlines()]
+        stamps = [fields[0] for fields in captures if fields[1:2] == ["200"]]
+        yield from self.next_capture(part, [stamp for stamp in reversed(stamps) if stamp not in cached])
+
+    def next_capture(self, part, stamps):
+        """The request for the newest capture left, raw; with none left, the walk goes on without this page."""
+        if not stamps:
+            self.logger.info("%s: no capture lists its members; its pages are listed only through other categories",
+                             part.key)
+            yield from self.next_category()
+            return
+        url = f"{archive.ARCHIVE}{stamps[0]}id_/{HOST}/{part.target}"
+        yield self.page_request(part.key, url, self.read_capture, errback=self.capture_failed,
+                                meta={CAPTURE: stamps[0]}, cb_kwargs={"part": part, "stamps": stamps[1:]})
+
+    def read_capture(self, response, part, stamps):
+        if not is_category_page(response.text):
+            yield from self.next_capture(part, stamps)
+            return
+        yield from self.read_part(response.text, part)
+
+    def read_part(self, page, part):
+        subcategories, members, next_url = read_category(page)
+        self.walk.add(part.category, part.zone, subcategories, members)
+        if next_url:
+            parts = urllib.parse.urlsplit(next_url)
+            target = parts.path.lstrip("/") + (f"?{parts.query}" if parts.query else "")
+            yield from self.category_part(part.category, part.zone, part.number + 1, target)
+            return
         yield from self.next_category()
+
+    def capture_failed(self, failure):
+        if failure.check(HttpError):
+            asked = failure.request.cb_kwargs
+            yield from self.next_capture(asked["part"], asked["stamps"])
 
     def category_failed(self, failure):
-        """A 404 tries the next older capture; another HTTP error is recorded and the walk goes on without it."""
-        if not failure.check(HttpError):
-            return
-        asked = failure.request.cb_kwargs
-        is_missing = failure.value.response.status == 404
-        if is_missing and asked["year"] + 1 < len(archive.CATEGORY_YEARS):
-            yield self.category_request(asked["category"], asked["zone"], asked["year"] + 1)
-            return
-        if not is_missing:
+        """The CDX lookup of a category failed: recorded, and the walk goes on without that category."""
+        if failure.check(HttpError):
             self.listing_failed(failure)
-        yield from self.next_category()
+            yield from self.next_category()
 
     def read_index(self, response):
         archived = archive.archived_quests(types.SimpleNamespace(get=lambda url: (response.url, response.body)))

@@ -8,7 +8,7 @@ from scrapy.http import HtmlResponse, Request
 from scrapy.utils.test import get_crawler
 
 from context import fixture
-from spiralspider.middlewares import FETCHED, PAGE, PageCache, StopRule
+from spiralspider.middlewares import CAPTURE, FETCHED, PAGE, PageCache, StopRule
 from spiralspider.pipelines import Harvest
 from spiralspider.settings import crawl_settings
 from spiralspider.sources import SourceSpider
@@ -137,6 +137,12 @@ class PageCacheTest(unittest.TestCase):
             f.write("<html>cached</html>")
         answer = self.pages.process_request(Request(WIKI, meta={PAGE: "Quest:Deeper_and_Deeper"}))
         self.assertEqual((answer.text, answer.meta[FETCHED]), ("<html>cached</html>", "20261027000000"))
+
+    def test_request_for_one_capture_is_not_answered_with_another(self):
+        with open(os.path.join(self.cache, "20260722063910_Category_Celestia_Quests.html"), "w") as f:
+            f.write("<html>Wayback Machine</html>")
+        asked = Request(WIKI, meta={PAGE: "Category:Celestia_Quests", CAPTURE: "20250101000000"})
+        self.assertIsNone(self.pages.process_request(asked))
 
     def test_error_page_is_not_cached(self):
         response = respond(404, request=Request(WIKI, meta={PAGE: "Quest:Deeper_and_Deeper"}))

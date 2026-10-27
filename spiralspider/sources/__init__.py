@@ -37,9 +37,9 @@ class SourceSpider(scrapy.Spider):
         self.registered = spiraltools_import.world(world)
         self.cache, self.harvest = cache, harvest
 
-    def page_request(self, key, url, callback, **kwargs):
+    def page_request(self, key, url, callback, meta=None, **kwargs):
         """A request for the page `key` (its file name in the cache), answered from the cache when it is there."""
-        return scrapy.Request(url, callback=callback, meta={PAGE: key}, **kwargs)
+        return scrapy.Request(url, callback=callback, meta={PAGE: key, **(meta or {})}, **kwargs)
 
     def fetched_stamp(self, response):
         """The timestamp a page fetched now is cached and cited under: the UTC time of the fetch."""

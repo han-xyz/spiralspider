@@ -12,6 +12,7 @@ from .spiraltools_import import archive
 
 PAGE = "spiralspider_page"
 FETCHED = "spiralspider_fetched"
+CAPTURE = "spiralspider_capture"
 BACKED_OFF = "spiralspider_backed_off"
 # The message of the IgnoreRequest Scrapy's RobotsTxtMiddleware raises for a URL robots.txt disallows.
 ROBOTS_REFUSAL = "Forbidden by robots.txt"
@@ -78,8 +79,9 @@ class StopRule:
 
 class PageCache:
     """A source's pages in the layout of spiraltools' archive cache. A request whose meta[PAGE] names a page the spider
-    fetched before is answered from <cache>/<timestamp>_<page>.html; a page fetched now (status 200, past the stop rule)
-    is written there. Either way the response's meta[FETCHED] is that timestamp."""
+    fetched before is answered from <cache>/<timestamp>_<page>.html, the newest one, or the one of the timestamp in
+    meta[CAPTURE]; a page fetched now (status 200, past the stop rule) is written there. Either way the response's
+    meta[FETCHED] is that timestamp."""
 
     def __init__(self, crawler):
         self.crawler = crawler
@@ -90,7 +92,14 @@ class PageCache:
 
     def process_request(self, request):
         key = request.meta.get(PAGE)
-        hit = archive.cached(self.crawler.spider.cache, key) if key else None
+        if key is None:
+            return None
+        cache, stamp = self.crawler.spider.cache, request.meta.get(CAPTURE)
+        if stamp:
+            path = os.path.join(cache, f"{stamp}_{archive.file_name(key)}.html")
+            hit = (stamp, path) if os.path.exists(path) else None
+        else:
+            hit = archive.cached(cache, key)
         if not hit:
             return None
         with open(hit[1], encoding="utf-8") as f:

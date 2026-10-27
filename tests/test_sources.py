@@ -1,4 +1,5 @@
 import asyncio
+import os
 import tempfile
 import unittest
 
@@ -12,6 +13,7 @@ from spiralspider.pipelines import Harvest
 from spiralspider.sources import folio, forum_guide, spiraltracker, wiki_archive, wiki_live
 
 DEEPER = "https://wiki.wizard101central.com/wiki/Quest:Deeper_and_Deeper"
+CELESTIA = "Category:Celestia_Quests"
 
 
 def spider(cls):
@@ -70,6 +72,43 @@ class WikiSources(unittest.TestCase):
         self.assertTrue(first_request(spider(wiki_live.WikiLive)).meta.get("playwright"))
         for source in (wiki_archive.WikiArchive, spiraltracker.SpiralTracker, folio.Folio):
             self.assertFalse(first_request(spider(source)).meta.get("playwright"))
+
+
+class ArchivedCategories(unittest.TestCase):
+    def setUp(self):
+        self.archive = spider(wiki_archive.WikiArchive)
+        [self.lookup] = self.archive.category_part(CELESTIA, None, 0, "wiki/" + CELESTIA)
+
+    def captures(self):
+        return list(self.archive.read_captures(response("cdx_category_celestia.txt", self.lookup.url),
+                                               **self.lookup.cb_kwargs))
+
+    def test_category_is_looked_up_in_the_cdx_with_status_200(self):
+        self.assertIn("url=wiki.wizard101central.com/wiki/Category:Celestia_Quests", self.lookup.url)
+        self.assertIn("filter=statuscode:200", self.lookup.url)
+
+    def test_newest_capture_is_fetched_raw(self):
+        [request] = self.captures()
+        self.assertEqual(request.url, "https://web.archive.org/web/20260722063910id_/"
+                                      "https://wiki.wizard101central.com/wiki/Category:Celestia_Quests")
+
+    def test_capture_that_lists_nothing_gives_way_to_the_next_older_one(self):
+        [newest] = self.captures()
+        [older] = self.archive.read_capture(response("wayback_interstitial.html", newest.url), **newest.cb_kwargs)
+        self.assertIn("/web/20250101000000id_/", older.url)
+
+    def test_cached_capture_that_lists_nothing_is_passed_over(self):
+        with open(os.path.join(self.archive.cache, "20260722063910_Category_Celestia_Quests.html"), "w") as f:
+            f.write(fixture("wayback_interstitial.html"))
+        [self.lookup] = self.archive.category_part(CELESTIA, None, 0, "wiki/" + CELESTIA)
+        [request] = self.captures()
+        self.assertIn("/web/20250101000000id_/", request.url)
+
+    def test_next_page_of_a_category_is_looked_up_the_same_way(self):
+        [newest] = self.captures()
+        [lookup] = self.archive.read_capture(response("category_celestia.html", newest.url), **newest.cb_kwargs)
+        self.assertIn("url=wiki.wizard101central.com/wiki/index.php%3Ftitle%3DCategory:Celestia_Quests"
+                      "%26pagefrom%3DGone%2BFishing", lookup.url)
 
 
 class ListingSources(unittest.TestCase):
