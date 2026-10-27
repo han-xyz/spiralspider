@@ -60,14 +60,21 @@ def run_one_after_another(settings, crawls):
 
 
 def write_results(registered, harvest, out_dir):
-    """Merge the harvest's records, write a spec per quest and the gap report; returns the report."""
-    merged = {key: merge(pairs) for key, pairs in harvest.records.items()}
+    """Merge the harvest's records, write a spec per quest and the gap report; returns the report. A quest whose merged
+    record has no name is an error of the sources that gave it, and gets no spec."""
+    merged, errors = {}, list(harvest.errors)
+    for key, pairs in harvest.records.items():
+        record = merge(pairs)
+        if "name" in record["fields"]:
+            merged[key] = record
+            continue
+        errors += [{"source": source["source"], "url": source["url"], "reason": "a record without a quest name"}
+                   for _, source in pairs]
     ids = {key: spec_id(registered, m["fields"]["name"]) for key, m in merged.items()}
     specs = [build_spec(registered, m, ids) for m in merged.values()]
     for spec in specs:
         write_spec(out_dir, spec)
-    report = gap_report(registered.name, harvest.counts, harvest.found, set(harvest.records), harvest.blocked,
-                        harvest.errors, specs)
+    report = gap_report(registered.name, harvest.counts, harvest.found, set(merged), harvest.blocked, errors, specs)
     write_report(out_dir, report)
     return report
 
