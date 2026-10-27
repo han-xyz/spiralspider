@@ -46,7 +46,9 @@ and the spec's `source` names, per field, the source, URL and fetch time it came
 ## Run it in Docker
 
 The image builds from this checkout and from `../spiraldb/tools` (a second build context, not a mount). The container
-mounts only `./out` and `./cache`, and runs as uid 1000; create both directories first so they belong to you:
+mounts only `./out` and `./cache`. Compose runs it as uid:gid 1000:1000 (set `SPIDER_UID` and `SPIDER_GID` if
+`id -u` and `id -g` say otherwise) with `HOME=/tmp`, so it can write both. Create them first so they belong to you,
+not to root:
 
 ```sh
 mkdir -p out cache
