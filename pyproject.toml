@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spiralspider"
+version = "0.1.0"
+description = "Quest data for the Wizard101 data pack from the sources that permit it, as spiraltools quest specs."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "CC-BY-NC-SA-4.0"}
+authors = [{name = "Han"}]
+dependencies = ["playwright>=1.47"]
+
+[project.scripts]
+spiralspider = "spiralspider.cli:main"
+
+[tool.setuptools]
+packages = ["spiralspider", "spiralspider.sources"]
