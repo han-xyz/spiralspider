@@ -67,9 +67,13 @@ docker compose run --rm spider gaps Celestia                     # print the las
 docker compose run --rm spider sources
 ```
 
-The image is Microsoft's Playwright image (Chromium included) with Scrapy and scrapy-playwright installed. Without
-compose:
+The image is Microsoft's Playwright image (Chromium included); uv installs the project and the locked Scrapy,
+scrapy-playwright and Playwright 1.47 into `/opt/venv` with the image's Python. Without compose:
 `docker build --build-context spiraltools=../spiraldb/tools -t spiralspider .`
+
+The dependencies are managed with [uv](https://docs.astral.sh/uv/) (`pyproject.toml`, `uv.lock`). Outside Docker,
+`uv run spiralspider sources` (or `crawl`, `gaps`) runs the same commands from this checkout; a crawl that way needs a
+Chromium for Playwright 1.47 on the host, which the image already has.
 
 The world is one of the spiraltools world registry (`spiraldb/tools/spiraltools/worlds.py`); another name is refused
 with the list of known worlds.
@@ -154,10 +158,10 @@ A response in it is not fetched again either; delete the folder to fetch everyth
 ## Tests
 
 ```sh
-python3 -I -m unittest discover tests
+uv run python -I -m unittest discover tests
 ```
 
 No network and no browser: the challenge detector on saved challenge pages; the stop rule and the page cache as
 middlewares on Scrapy responses; the politeness settings of every source and the `SPIDER_CDP_URL` mapping; the merge
-priority; the spec writer against the schema; and each source spider's callbacks on a fixture. They need Scrapy and
-scrapy-playwright installed (`pip install .`), and the spiraldb checkout beside this one (or `SPIRALTOOLS`).
+priority; the spec writer against the schema; and each source spider's callbacks on a fixture. `uv run` creates `.venv`
+from the lockfile on first use. They need the spiraldb checkout beside this one (or `SPIRALTOOLS`).

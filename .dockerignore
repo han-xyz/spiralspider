@@ -4,3 +4,4 @@ out
 cache
 tests
 **/__pycache__
+.venv
