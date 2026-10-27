@@ -12,7 +12,10 @@ from ..spiraltools_import import archive, world
 from . import Raw, fetch_cached, provenance
 
 # world name (as the spiraltools registry spells it) -> web.archive.org URLs of its quest guides
-GUIDES = {}
+GUIDES = {
+    # world: the Wayback copy of the Wizard101 Central forum guide (the live forum refuses automated clients).
+    "Celestia": "https://web.archive.org/web/20230930053505/https://www.wizard101central.com/forums/showthread.php?110487-Complete-Guide-to-Celestia-Quests",
+}
 BOLD = re.compile(r"<b>(.*?)</b>(.*?)(?=<b>|$)", re.S)
 XP = re.compile(r"([\d,]+)\s*XP\b", re.I)
 GOLD = re.compile(r"([\d,]+)\s*Gold\b", re.I)
