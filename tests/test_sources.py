@@ -112,21 +112,40 @@ class ArchivedCategories(unittest.TestCase):
 
 
 class ListingSources(unittest.TestCase):
+    def listing(self, source, name):
+        return list(spider(source).read_listing(response(name)))
+
     def test_spiraltracker_gives_order_next_quest_and_goal_types(self):
-        items = list(spider(spiraltracker.SpiralTracker).read_listing(response("spiraltracker_celestia.html")))
-        self.assertEqual(records(items)["Deeper and Deeper"], {"name": "Deeper and Deeper", "order": 2,
-                                                                "leads_to": ["Survivors"], "goal_types": ["talk"]})
+        items = self.listing(spiraltracker.SpiralTracker, "spiraltracker_dragonspyre.html")
+        self.assertEqual(records(items)["Crystal-Matic"], {"name": "Crystal-Matic", "order": 2,
+                                                            "leads_to": ["Holger's Crystals"],
+                                                            "goal_types": ["explore", "talk"]})
+
+    def test_spiraltracker_quest_split_over_two_rows_is_one_quest(self):
+        items = self.listing(spiraltracker.SpiralTracker, "spiraltracker_dragonspyre.html")
+        listed = [item.quest for item in items if isinstance(item, Listed)]
+        self.assertEqual(listed.count("Forward… Into History!"), 1)
+        self.assertEqual(records(items)["Forward… Into History!"]["goal_types"], ["interact", "talk"])
 
     def test_folio_gives_order_next_quest_and_goal_types(self):
-        items = list(spider(folio.Folio).read_listing(response("folio_celestia.html")))
-        self.assertEqual(records(items)["Survivors"], {"name": "Survivors", "order": 3, "leads_to": [],
-                                                        "goal_types": ["defeat"]})
+        items = self.listing(folio.Folio, "folio_dragonspyre.html")
+        self.assertEqual(records(items)["Holger’s Crystals"], {"name": "Holger’s Crystals", "order": 3,
+                                                               "leads_to": ["Stone Tower Pilot"],
+                                                               "goal_types": ["use", "talk"]})
 
-    def test_every_listed_quest_and_only_those_has_a_record(self):
-        items = list(spider(folio.Folio).read_listing(response("folio_celestia.html")))
+    def test_folio_lists_the_quest_tables_and_nothing_else_on_the_page(self):
+        items = self.listing(folio.Folio, "folio_dragonspyre.html")
         listed = [item.quest for item in items if isinstance(item, Listed)]
+        self.assertEqual((len(listed), listed[0], listed[-1]), (12, "Bad Blood", "Portal Combat"))
         self.assertEqual(list(records(items)), listed)
-        self.assertNotIn("Gone Fishing", listed)
+
+    def test_folio_goal_types_drop_the_counts(self):
+        [(_, goal_types)] = folio.listed_quests("<tr><td>9</td><td><strong>Wizard and Crystal</strong></td>"
+                                                "<td>Talk x2 + x4 Boss + Talk</td><td></td></tr>")
+        self.assertEqual(goal_types, ["talk", "boss"])
+
+    def test_row_without_a_quest_name_is_skipped(self):
+        self.assertEqual(folio.listed_quests("<tr><td>1</td><td><strong> </strong></td><td>Talk</td></tr>"), [])
 
 
 class ForumGuide(unittest.TestCase):
