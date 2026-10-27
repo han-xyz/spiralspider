@@ -1,11 +1,11 @@
-"""The Internet Archive's copies of the wiki: the CDX index and the category captures, then each quest's snapshot.
+"""The Internet Archive's copies of the wiki: the category captures, a CDX lookup per quest, then its snapshot.
 
 The walk, the index and the cache follow spiraltools' own (`quests/archive.py`), so
-`spiraltools.py archive parse <World> --cache <cache>/wiki_archive` reads the same cache. A category page (and each of
-its next pages) is read from the newest capture with status 200 that lists members: the archive also records the
-wiki's redirects and refusals as captures, and serves them as a "Wayback Machine" page of its own.
+`spiraltools.py archive parse <World> --cache <cache>/wiki_archive` reads the same cache. The archive also records the
+wiki's redirects and refusals as captures, replayed with the wiki's status or as a "Wayback Machine" page of its own,
+so a page is read from a capture with status 200 that is usable: a category page that lists members, a quest page
+with its infobox and no challenge. The captures are tried newest first.
 """
-import glob
 import json
 import os
 import re
@@ -17,7 +17,8 @@ from scrapy.exceptions import IgnoreRequest
 from scrapy.spidermiddlewares.httperror import HttpError
 
 from ..items import Listed, Record
-from ..middlewares import CAPTURE, FETCHED
+from ..browser import challenge_marker
+from ..middlewares import CAPTURE, FETCHED, cached_copies
 from ..spiraltools_import import archive
 from . import CategoryWalk, SourceSpider, provenance, quest_name
 from .wiki_live import HOST, read_category
@@ -52,10 +53,13 @@ def is_category_page(page):
     return 'id="mw-pages"' in page or 'id="mw-subcategories"' in page
 
 
-def cached_copies(cache, key):
-    """(timestamp, path) of every cached capture of a page, newest first."""
-    paths = sorted(glob.glob(os.path.join(cache, f"[0-9]*_{glob.escape(archive.file_name(key))}.html")), reverse=True)
-    return [(os.path.basename(path)[:14], path) for path in paths]
+def is_quest_page(page):
+    return 'id="Quest_Information"' in page and challenge_marker(page) is None
+
+
+def snapshot_attempts(stamps):
+    """(raw, timestamp) in the order tried: each capture raw, newest first, then the oldest one's playback form."""
+    return [(True, stamp) for stamp in stamps] + [(False, stamps[-1])] if stamps else []
 
 
 class Part(NamedTuple):
@@ -71,11 +75,6 @@ class Part(NamedTuple):
         return f"{self.category}_part{self.number}" if self.number else self.category
 
 
-def snapshots(entry):
-    """(raw, at) in the order they are tried: the newest raw snapshot, the CDX capture raw, that capture's playback."""
-    return (True, archive.NEWEST), (True, entry["timestamp"]), (False, entry["timestamp"])
-
-
 class WikiArchive(SourceSpider):
     name = "wiki_archive"
 
@@ -87,6 +86,9 @@ class WikiArchive(SourceSpider):
     async def start(self):
         for request in self.next_category():
             yield request
+
+    def is_usable(self, response):
+        return is_category_page(response.text) or is_quest_page(response.text)
 
     def fetched_stamp(self, response):
         """The capture's timestamp, as spiraltools caches it."""
@@ -160,14 +162,14 @@ class WikiArchive(SourceSpider):
         """The CDX lookup of the next quest page of the walk; once all are looked up, the index and the snapshots."""
         pending = [page for page in sorted(self.walk.quests) if page not in self.captures]
         if not pending:
-            yield from self.write_index()
+            yield from self.quest_pages()
             return
         target = "wiki/" + urllib.parse.quote(pending[0], safe=PAGE_SAFE)
         yield cdx_lookup(target, self.read_lookup, self.lookup_failed, NEWEST_THREE, cb_kwargs={"page": pending[0]})
 
     def read_lookup(self, response, page):
         stamps = capture_stamps(response.text)
-        self.captures[page] = stamps[-1] if stamps else None
+        self.captures[page] = stamps[::-1]
         yield from self.next_lookup()
 
     def lookup_failed(self, failure):
@@ -175,15 +177,16 @@ class WikiArchive(SourceSpider):
         the stop rule dropped ends the source."""
         if failure.check(IgnoreRequest) and not failure.check(HttpError):
             return
-        self.captures[failure.request.cb_kwargs["page"]] = None
+        self.captures[failure.request.cb_kwargs["page"]] = []
         yield from self.next_lookup()
 
     def write_index(self):
+        """The index of the walk's quests, each with its newest capture or as missing a snapshot; returns it."""
         index = []
         for page in sorted(self.walk.quests):
             entry = {"name": quest_name(page), "page": page}
             if self.captures[page]:
-                entry["timestamp"] = self.captures[page]
+                entry["timestamp"] = self.captures[page][0]
             else:
                 entry["missing_snapshot"] = True
             entry["zones"] = sorted(self.walk.quests[page]["zones"])
@@ -192,27 +195,54 @@ class WikiArchive(SourceSpider):
         os.makedirs(self.cache, exist_ok=True)
         with open(archive.index_path(self.cache, self.registered.name), "w", encoding="utf-8") as f:
             json.dump(index, f, indent=2, ensure_ascii=False)
-        entries = [entry for entry in index if not entry.get("missing_snapshot")]
+        return index
+
+    def quest_pages(self):
+        entries = [entry for entry in self.write_index() if not entry.get("missing_snapshot")]
         for entry in entries:
             yield Listed(self.name, entry["name"])
         parsed_live = self.harvest.parsed_by("wiki_live")
         for entry in entries:
             if archive.title_norm(entry["name"]) not in parsed_live:
-                yield self.snapshot_request(entry, 0)
+                yield from self.snapshot(entry)
 
-    def snapshot_request(self, entry, attempt):
-        raw, at = snapshots(entry)[attempt]
-        return self.page_request(entry["page"], wayback_url(at, raw, entry["page"]), self.read_snapshot,
-                                 errback=self.snapshot_failed, cb_kwargs={"entry": entry, "attempt": attempt})
+    def snapshot(self, entry):
+        """The quest's newest usable cached copy, else the request for its first capture not tried yet."""
+        cached = []
+        for stamp, path in cached_copies(self.cache, entry["page"]):
+            with open(path, encoding="utf-8") as f:
+                page = f.read()
+            if is_quest_page(page):
+                yield self.record(entry, page, True, stamp)
+                return
+            cached.append(stamp)
+        stamps = [stamp for stamp in self.captures[entry["page"]] if stamp not in cached]
+        yield from self.next_snapshot(entry, snapshot_attempts(stamps))
 
-    def read_snapshot(self, response, entry, attempt):
-        raw, _ = snapshots(entry)[attempt]
-        stamp = response.meta[FETCHED]
-        url = f"{archive.ARCHIVE}{stamp}{'id_' if raw else ''}/{archive.WIKI}{entry['page']}"
-        fields = {"name": entry["name"], **archive.read_page(response.text)}
-        yield Record(self.name, entry["name"], fields, provenance(self.name, url, stamp))
+    def next_snapshot(self, entry, attempts):
+        """The request for the first of `attempts`; with none left, the quest is missing its snapshot."""
+        if not attempts:
+            self.logger.info("%s: no usable capture", entry["page"])
+            self.captures[entry["page"]] = []
+            self.write_index()
+            return
+        raw, stamp = attempts[0]
+        yield self.page_request(entry["page"], wayback_url(stamp, raw, entry["page"]), self.read_snapshot,
+                                errback=self.snapshot_failed, meta={CAPTURE: stamp},
+                                cb_kwargs={"entry": entry, "attempts": attempts})
+
+    def read_snapshot(self, response, entry, attempts):
+        if not is_quest_page(response.text):
+            yield from self.next_snapshot(entry, attempts[1:])
+            return
+        yield self.record(entry, response.text, attempts[0][0], response.meta[FETCHED])
 
     def snapshot_failed(self, failure):
-        asked = failure.request.cb_kwargs
-        if failure.check(HttpError) and asked["attempt"] + 1 < len(snapshots(asked["entry"])):
-            yield self.snapshot_request(asked["entry"], asked["attempt"] + 1)
+        if failure.check(HttpError):
+            asked = failure.request.cb_kwargs
+            yield from self.next_snapshot(asked["entry"], asked["attempts"][1:])
+
+    def record(self, entry, page, raw, stamp):
+        url = f"{archive.ARCHIVE}{stamp}{'id_' if raw else ''}/{archive.WIKI}{entry['page']}"
+        fields = {"name": entry["name"], **archive.read_page(page)}
+        return Record(self.name, entry["name"], fields, provenance(self.name, url, stamp))

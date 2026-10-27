@@ -53,7 +53,7 @@ class WikiSources(unittest.TestCase):
     def test_archive_page_parses_like_the_live_page(self):
         entry = {"name": "Deeper and Deeper", "page": "Quest:Deeper_and_Deeper", "timestamp": "20250827061209"}
         [archived] = spider(wiki_archive.WikiArchive).read_snapshot(response("quest_deeper_and_deeper.html"),
-                                                                    entry=entry, attempt=0)
+                                                                    entry=entry, attempts=[(True, "20250827061209")])
         [live] = spider(wiki_live.WikiLive).read_quest(response("quest_deeper_and_deeper.html"),
                                                        quest="Deeper and Deeper")
         self.assertEqual(archived.fields, live.fields)
@@ -144,6 +144,56 @@ class ArchivedQuests(unittest.TestCase):
         [second] = self.answer(self.first)
         self.answer(second)
         self.assertEqual(self.index()["Quest:Bad_Blood"]["timestamp"], "20260105000000")
+
+    def snapshots(self):
+        [second] = self.answer(self.first)
+        return [item for item in self.answer(second) if isinstance(item, Request)]
+
+    def try_next(self, request, fixture_name):
+        page = response(fixture_name, request.url)
+        return list(self.archive.read_snapshot(page, **request.cb_kwargs))
+
+    def test_newest_capture_with_status_200_is_fetched_raw_first(self):
+        first = self.snapshots()[0]
+        self.assertEqual(first.url, "https://web.archive.org/web/20260105000000id_/"
+                                    "https://wiki.wizard101central.com/wiki/Quest:Bad_Blood")
+
+    def test_replayed_challenge_page_gives_way_to_the_next_older_capture(self):
+        [older] = self.try_next(self.snapshots()[0], "challenge_turnstile.html")
+        self.assertIn("/web/20250604000000id_/", older.url)
+
+    def test_page_without_a_quest_infobox_gives_way_to_the_next_capture(self):
+        [older] = self.try_next(self.snapshots()[0], "wayback_interstitial.html")
+        self.assertIn("/web/20250604000000id_/", older.url)
+
+    def test_oldest_capture_is_tried_raw_then_in_its_playback_form(self):
+        request = self.snapshots()[0]
+        for _ in range(2):
+            [request] = self.try_next(request, "wayback_interstitial.html")
+        self.assertIn("/web/20240103000000id_/", request.url)
+        [request] = self.try_next(request, "wayback_interstitial.html")
+        self.assertIn("/web/20240103000000/", request.url)
+
+    def test_quest_with_no_usable_capture_left_is_missing_its_snapshot(self):
+        request = self.snapshots()[0]
+        for _ in range(3):
+            [request] = self.try_next(request, "wayback_interstitial.html")
+        self.assertEqual(self.try_next(request, "wayback_interstitial.html"), [])
+        self.assertTrue(self.index()["Quest:Bad_Blood"]["missing_snapshot"])
+
+    def test_usable_cached_snapshot_is_read_without_a_request(self):
+        with open(os.path.join(self.archive.cache, "20231122065551_Quest_Bad_Blood.html"), "w") as f:
+            f.write(fixture("quest_deeper_and_deeper.html"))
+        [second] = self.answer(self.first)
+        items = self.answer(second)
+        self.assertIn("Bad Blood", records(items))
+        self.assertNotIn("Quest:Bad_Blood", " ".join(item.url for item in items if isinstance(item, Request)))
+
+    def test_only_a_usable_snapshot_is_cached(self):
+        request = self.snapshots()[0]
+        self.assertFalse(self.archive.is_usable(response("challenge_turnstile.html", request.url)))
+        self.assertFalse(self.archive.is_usable(response("wayback_interstitial.html", request.url)))
+        self.assertTrue(self.archive.is_usable(response("quest_deeper_and_deeper.html", request.url)))
 
     def test_quest_whose_lookup_fails_is_missing_its_snapshot_not_the_source(self):
         [second] = self.refuse(self.first)
