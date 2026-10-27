@@ -11,7 +11,7 @@ from context import fixture
 from spiralspider.middlewares import CAPTURE, FETCHED, PAGE, PageCache, StopRule
 from spiralspider.pipelines import Harvest
 from spiralspider.settings import crawl_settings
-from spiralspider.sources import SourceSpider
+from spiralspider.sources import SourceSpider, wiki_archive, wiki_live
 
 WIKI = "https://wiki.wizard101central.com/wiki/Quest:Deeper_and_Deeper"
 
@@ -168,6 +168,23 @@ class PageCacheTest(unittest.TestCase):
         [name] = os.listdir(self.cache)
         self.assertRegex(name, r"^\d{14}_Quest_Deeper_and_Deeper\.html$")
         self.assertEqual(response.meta[FETCHED], name[:14])
+
+    def written_name(self, source):
+        self.pages.crawler.spider.cache_prefix = source.cache_prefix
+        response = respond(200, request=Request(WIKI, meta={PAGE: "Quest:Deeper_and_Deeper"}))
+        self.pages.process_response(response.request, response)
+        [name] = os.listdir(self.cache)
+        return name
+
+    def test_live_wiki_pages_are_cached_as_live_pages(self):
+        self.assertRegex(self.written_name(wiki_live.WikiLive), r"^\d{14}_live_Quest_Deeper_and_Deeper\.html$")
+
+    def test_archive_captures_are_cached_without_a_prefix(self):
+        self.assertRegex(self.written_name(wiki_archive.WikiArchive), r"^\d{14}_Quest_Deeper_and_Deeper\.html$")
+
+    def test_live_page_is_read_back_from_its_own_name(self):
+        self.written_name(wiki_live.WikiLive)
+        self.assertIsNotNone(self.pages.process_request(Request(WIKI, meta={PAGE: "Quest:Deeper_and_Deeper"})))
 
     def test_cached_page_is_answered_without_a_request(self):
         with open(os.path.join(self.cache, "20261027000000_Quest_Deeper_and_Deeper.html"), "w") as f:

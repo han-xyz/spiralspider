@@ -30,7 +30,10 @@ def quest_name(page):
 
 
 class SourceSpider(scrapy.Spider):
-    """A source as a Scrapy spider, given the world's name, the source's cache folder and the crawl's harvest."""
+    """A source as a Scrapy spider, given the world's name, the source's cache folder and the crawl's harvest. Its
+    pages are cached as <timestamp>_<cache_prefix><page>.html."""
+
+    cache_prefix = ""
 
     def __init__(self, world, cache, harvest, **kwargs):
         super().__init__(**kwargs)

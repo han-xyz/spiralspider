@@ -1,6 +1,6 @@
 """The live Wizard101 Central wiki through the sandboxed browser: the world's quest categories, then each quest page.
 
-Pages are cached in the layout of spiraltools' archive cache (`<timestamp>_<page>.html` and `index-<world>.json`), so
+Pages are cached in the layout of spiraltools' cache (`<timestamp>_live_<page>.html` and `index-<world>.json`), so
 `spiraltools.py archive parse <World> --cache <cache>/wiki_live` builds client-resolved specs from them.
 """
 import html
@@ -32,6 +32,8 @@ def read_category(page):
 
 class WikiLive(SourceSpider):
     name = "wiki_live"
+    # spiraltools' parser reads <timestamp>_live_<page>.html as a live page, an unprefixed name as an archive capture.
+    cache_prefix = "live_"
     custom_settings = {
         "DOWNLOAD_HANDLERS": {"http": PLAYWRIGHT_HANDLER, "https": PLAYWRIGHT_HANDLER},
         "HTTPCACHE_ENABLED": False,

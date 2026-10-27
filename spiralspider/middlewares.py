@@ -24,9 +24,9 @@ BACKOFFS = 1
 REPLAY_BACKOFFS = 5
 
 
-def cached_copies(cache, key):
-    """(timestamp, path) of every cached copy of a page, newest first."""
-    name = f"_{archive.file_name(key)}.html"
+def cached_copies(cache, key, prefix=""):
+    """(timestamp, path) of every cached copy of a page, newest first; `prefix` goes between timestamp and page."""
+    name = f"_{prefix}{archive.file_name(key)}.html"
     paths = [path for path in glob.glob(os.path.join(cache, f"[0-9]*{glob.escape(name)}"))
              if os.path.basename(path)[14:] == name]
     return sorted(((os.path.basename(path)[:14], path) for path in paths), reverse=True)
@@ -105,10 +105,10 @@ class StopRule:
 
 
 class PageCache:
-    """A source's pages in the layout of spiraltools' archive cache. A request whose meta[PAGE] names a page the spider
-    fetched before is answered from <cache>/<timestamp>_<page>.html, the newest one, or the one of the timestamp in
-    meta[CAPTURE]; a page fetched now (status 200, past the stop rule, one the spider can use) is written there. Either
-    way the response's meta[FETCHED] is that timestamp."""
+    """A source's pages in the layout of spiraltools' cache. A request whose meta[PAGE] names a page the spider fetched
+    before is answered from <cache>/<timestamp>_<cache_prefix><page>.html, the newest one, or the one of the timestamp
+    in meta[CAPTURE]; a page fetched now (status 200, past the stop rule, one the spider can use) is written there.
+    Either way the response's meta[FETCHED] is that timestamp."""
 
     def __init__(self, crawler):
         self.crawler = crawler
@@ -121,12 +121,12 @@ class PageCache:
         key = request.meta.get(PAGE)
         if key is None:
             return None
-        cache, stamp = self.crawler.spider.cache, request.meta.get(CAPTURE)
+        spider, stamp = self.crawler.spider, request.meta.get(CAPTURE)
         if stamp:
-            path = os.path.join(cache, f"{stamp}_{archive.file_name(key)}.html")
+            path = os.path.join(spider.cache, f"{stamp}_{spider.cache_prefix}{archive.file_name(key)}.html")
             hit = (stamp, path) if os.path.exists(path) else None
         else:
-            hit = next(iter(cached_copies(cache, key)), None)
+            hit = next(iter(cached_copies(spider.cache, key, spider.cache_prefix)), None)
         if not hit:
             return None
         with open(hit[1], encoding="utf-8") as f:
@@ -141,7 +141,8 @@ class PageCache:
             return response
         stamp = spider.fetched_stamp(response)
         os.makedirs(spider.cache, exist_ok=True)
-        with open(os.path.join(spider.cache, f"{stamp}_{archive.file_name(key)}.html"), "w", encoding="utf-8") as f:
+        name = f"{stamp}_{spider.cache_prefix}{archive.file_name(key)}.html"
+        with open(os.path.join(spider.cache, name), "w", encoding="utf-8") as f:
             f.write(response.text)
         request.meta[FETCHED] = stamp
         return response
