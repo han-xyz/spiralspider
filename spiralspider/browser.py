@@ -18,8 +18,24 @@ CHALLENGE_MARKERS = (
 
 
 def challenge_marker(text):
-    """The first challenge marker in a page, or None for an ordinary page."""
-    return next((marker for marker in CHALLENGE_MARKERS if marker in text), None)
+    """Return the first recognizable challenge marker, if present."""
+    normalized = text.casefold()
+
+    markers = (
+        ("<title>just a moment...</title>", "cloudflare_interstitial"),
+        ("performing security verification", "security_verification"),
+        ("verify you are human", "human_verification"),
+        ("challenges.cloudflare.com", "challenge_script"),
+        ("cf-turnstile", "turnstile"),
+        ("_cf_chl_opt", "challenge_configuration"),
+        ("cf-chl-", "challenge_resource"),
+    )
+
+    for needle, label in markers:
+        if needle in normalized:
+            return label
+
+    return None
 
 
 CDP_URL_VARIABLE = "SPIDER_CDP_URL"

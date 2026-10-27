@@ -117,7 +117,10 @@ class StopRuleTest(unittest.TestCase):
     def test_blocked_is_recorded_with_source_url_reason_and_time(self):
         with self.assertRaises(IgnoreRequest):
             through(self.rule, respond(403, "Forbidden"))
-        self.assertEqual(set(self.blocked()[0]), {"source", "url", "reason", "at"})
+        self.assertEqual(
+            set(self.blocked()[0]),
+            {"source", "url", "reason", "at", "host", "status"},
+        )
 
 
 class ReplayTest(unittest.TestCase):

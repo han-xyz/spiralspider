@@ -32,9 +32,37 @@ def cached_copies(cache, key, prefix=""):
     return sorted(((os.path.basename(path)[:14], path) for path in paths), reverse=True)
 
 
-def refusal(source, url, reason):
-    at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-    return {"source": source, "url": url, "reason": reason, "at": at}
+def refusal(source, url, reason, *, status=None, headers=None):
+    """Build a structured record for a source refusal."""
+    parts = urllib.parse.urlsplit(url)
+
+    record = {
+        "source": source,
+        "url": url,
+        "host": parts.hostname,
+        "reason": reason,
+        "at": datetime.datetime.now(
+            datetime.timezone.utc
+        ).isoformat(timespec="seconds"),
+    }
+
+    if status is not None:
+        record["status"] = status
+
+    if headers:
+        ray_id = headers.get(b"cf-ray") or headers.get("cf-ray")
+        if ray_id:
+            if isinstance(ray_id, bytes):
+                ray_id = ray_id.decode("ascii", errors="replace")
+            record["cf_ray"] = ray_id
+
+        retry_after = headers.get(b"retry-after") or headers.get("retry-after")
+        if retry_after:
+            if isinstance(retry_after, bytes):
+                retry_after = retry_after.decode("ascii", errors="replace")
+            record["retry_after"] = retry_after
+
+    return record
 
 
 class StopRule:
@@ -66,16 +94,35 @@ class StopRule:
         if response.status == 429:
             backoffs = request.meta.get(BACKED_OFF, 0)
             if backoffs >= (REPLAY_BACKOFFS if is_replay else BACKOFFS):
-                self.block(request, f"HTTP 429 again after {backoffs} backoff(s)")
+                self.block(
+                        request,
+                        f"HTTP 429 again after {backoffs} backoff(s)",
+                        response=response,
+                    )
             await self.back_off()
             return request.replace(dont_filter=True, meta={**request.meta, BACKED_OFF: backoffs + 1})
         if is_replay:
             return response
         if response.status == 403:
-            self.block(request, "HTTP 403")
+            parts = urllib.parse.urlsplit(request.url)
+
+            # Let the archive spider's CDX errback record an unavailable
+            # index and preserve its partial results. Do not retry the URL.
+            if (
+                self.crawler.spider.name == "wiki_archive"
+                and parts.hostname == "web.archive.org"
+                and parts.path == "/cdx/search/cdx"
+            ):
+                return response
+
+            self.block(request, "HTTP 403", response=response)
         marker = challenge_marker(response.text) if isinstance(response, TextResponse) else None
         if marker:
-            self.block(request, f"challenge page ({marker})")
+            self.block(
+                request,
+                f"challenge page ({marker})",
+                response=response,
+            )
         return response
 
     def process_exception(self, request, exception):
@@ -93,15 +140,48 @@ class StopRule:
         finally:
             self.crawler.engine.unpause()
 
-    def block(self, request, reason):
-        """Record the refusal (once per source), close the spider, and drop the response by raising IgnoreRequest."""
+    def block(self, request, reason, response=None):
+        """Record a refusal once, then stop this source."""
         spider = self.crawler.spider
-        if not self.blocked:
-            self.blocked = True
-            spider.harvest.blocked.append(refusal(spider.name, request.url, reason))
-            spider.logger.warning("blocked: %s: %s: %s; moving to the next source", spider.name, request.url, reason)
-            self.closing = deferred_from_coro(self.crawler.engine.close_spider_async(reason="blocked"))
-        raise IgnoreRequest(f"{spider.name}: {request.url}: {reason}")
+
+        if self.blocked:
+            raise IgnoreRequest(
+                f"{spider.name}: {request.url}: {reason}"
+            )
+
+        self.blocked = True
+
+        record = refusal(
+            spider.name,
+            request.url,
+            reason,
+            status=response.status if response is not None else None,
+            headers=response.headers if response is not None else None,
+        )
+        spider.harvest.blocked.append(record)
+
+        spider.logger.warning(
+            "blocked: source=%s host=%s status=%s reason=%s url=%s",
+            spider.name,
+            record["host"],
+            record.get("status", "-"),
+            reason,
+            request.url,
+        )
+
+        if record.get("cf_ray"):
+            spider.logger.warning(
+                "Cloudflare Ray ID: %s",
+                record["cf_ray"],
+            )
+
+        self.closing = deferred_from_coro(
+            self.crawler.engine.close_spider_async(reason="blocked")
+        )
+
+        raise IgnoreRequest(
+            f"{spider.name}: {request.url}: {reason}"
+        )
 
 
 class PageCache:

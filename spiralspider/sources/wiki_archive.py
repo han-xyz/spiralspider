@@ -94,6 +94,8 @@ class WikiArchive(SourceSpider):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.cdx_unavailable = False
+        self.lookup_failures = {}
         self.walk = CategoryWalk(self.registered.category)
         self.captures = {}
 
@@ -167,10 +169,23 @@ class WikiArchive(SourceSpider):
             yield from self.next_capture(asked["part"], asked["stamps"])
 
     def category_failed(self, failure):
-        """The CDX lookup of a category failed: recorded, and the walk goes on without that category."""
-        if failure.check(HttpError):
-            self.listing_failed(failure)
-            yield from self.without_listing(failure.request.cb_kwargs["part"])
+        """Record a failed category lookup and preserve listings already collected."""
+        if not failure.check(HttpError):
+            return
+
+        response = failure.value.response
+
+        if response.status == 403:
+            self.cdx_unavailable = True
+            self.logger.warning(
+                "Internet Archive CDX returned HTTP 403; "
+                "preserving the partial archive index"
+            )
+            yield from self.quest_pages()
+            return
+
+        self.listing_failed(failure)
+        yield from self.without_listing(failure.request.cb_kwargs["part"])
 
     def without_listing(self, part):
         """The walk goes on without a category page; for the world's quest category, from its typed subcategories and
@@ -225,39 +240,88 @@ class WikiArchive(SourceSpider):
         yield from self.next_lookup()
 
     def lookup_failed(self, failure):
-        """A lookup that failed after its retries leaves that quest without a snapshot and the source goes on; a lookup
-        the stop rule dropped ends the source."""
+        """Distinguish an unavailable lookup from a successful empty result."""
         if failure.check(IgnoreRequest) and not failure.check(HttpError):
             return
-        self.captures[failure.request.cb_kwargs["page"]] = []
+
+        page = failure.request.cb_kwargs["page"]
+
+        if failure.check(HttpError):
+            response = failure.value.response
+            status = response.status
+
+            self.lookup_failures[page] = f"http_{status}"
+
+            if status == 403:
+                self.cdx_unavailable = True
+                self.logger.warning(
+                    "Internet Archive CDX returned HTTP 403; "
+                    "stopping archive lookups and preserving partial results"
+                )
+                yield from self.quest_pages()
+                return
+        else:
+            self.lookup_failures[page] = "request_failed"
+
+        self.captures[page] = []
         yield from self.next_lookup()
 
     def write_index(self):
-        """The index of the walk's quests, each with its newest capture or as missing a snapshot; returns it."""
+        """Write quest listings while distinguishing missing snapshots from failed lookups."""
         index = []
+
         for page in sorted(self.walk.quests):
             entry = {"name": quest_name(page), "page": page}
-            if self.captures[page]:
-                entry["timestamp"] = self.captures[page][0]
+            stamps = self.captures.get(page, [])
+
+            if stamps:
+                entry["timestamp"] = stamps[0]
+            elif page in self.lookup_failures:
+                entry["lookup_status"] = self.lookup_failures[page]
+                entry["missing_snapshot"] = True
+            elif self.cdx_unavailable:
+                entry["lookup_status"] = "cdx_unavailable"
+                entry["missing_snapshot"] = True
             else:
                 entry["missing_snapshot"] = True
+
             entry["zones"] = sorted(self.walk.quests[page]["zones"])
-            entry["type"] = "/".join(sorted(self.walk.quests[page]["types"])) or None
+            entry["type"] = (
+                "/".join(sorted(self.walk.quests[page]["types"])) or None
+            )
             index.append(entry)
+
         os.makedirs(self.cache, exist_ok=True)
-        with open(archive.index_path(self.cache, self.registered.name), "w", encoding="utf-8") as f:
+        with open(
+            archive.index_path(self.cache, self.registered.name),
+            "w",
+            encoding="utf-8",
+        ) as f:
             json.dump(index, f, indent=2, ensure_ascii=False)
+
         return index
 
     def quest_pages(self):
-        entries = [entry for entry in self.write_index() if not entry.get("missing_snapshot")]
-        for entry in entries:
+        """Emit known quest listings and fetch snapshots only when CDX is available."""
+        index = self.write_index()
+
+        # Category pages can establish that a quest exists even when its
+        # archived page or CDX lookup is unavailable.
+        for entry in index:
             yield Listed(self.name, entry["name"])
+
+        # If CDX was refused, do not schedule further archive requests.
+        if self.cdx_unavailable:
+            return
+
         parsed_live = self.harvest.parsed_by("wiki_live")
-        for entry in entries:
+
+        for entry in index:
+            if not entry.get("timestamp"):
+                continue
+
             if archive.title_norm(entry["name"]) not in parsed_live:
                 yield from self.snapshot(entry)
-
     def snapshot(self, entry):
         """The quest's newest usable cached copy, else the request for its first capture not tried yet."""
         cached = []

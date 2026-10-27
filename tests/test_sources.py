@@ -265,7 +265,14 @@ class ArchivedQuests(unittest.TestCase):
         [second] = self.refuse(self.first)
         items = self.answer(second)
         self.assertTrue(self.index()["Quest:Bad_Blood"]["missing_snapshot"])
-        self.assertEqual([item.quest for item in items if isinstance(item, Listed)], ["Crystal-Matic"])
+        self.assertEqual(
+            [item.quest for item in items if isinstance(item, Listed)],
+            ["Bad Blood", "Crystal-Matic"],
+        )
+        self.assertEqual(
+            self.index()["Quest:Bad_Blood"]["lookup_status"],
+            "http_503",
+        )
         self.assertIn("Quest:Crystal-Matic", [item for item in items if isinstance(item, Request)][0].url)
 
 
