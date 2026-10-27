@@ -19,7 +19,7 @@ class Politeness(unittest.TestCase):
     def test_one_request_per_host_at_least_three_seconds_apart(self):
         crawl = settings()
         self.assertEqual(crawl.getfloat("DOWNLOAD_DELAY"), 3.0)
-        self.assertFalse(crawl.getbool("RANDOMIZE_DOWNLOAD_DELAY"))
+        self.assertEqual(crawl.getfloat("DOWNLOAD_DELAY_JITTER"), 0)
         self.assertEqual(crawl.getint("CONCURRENT_REQUESTS_PER_DOMAIN"), 1)
         self.assertFalse(crawl.getbool("AUTOTHROTTLE_ENABLED"))
 
