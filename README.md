@@ -16,6 +16,11 @@ around and never retried beyond that one backoff. A URL that the host's robots.t
 is recorded the same way. A server error (5xx) or a network error is retried once (a CDX lookup of the Internet
 Archive three times); nothing else is retried.
 
+The Internet Archive replays a page with the status the wiki gave when it was captured, so on `web.archive.org/web/...`
+(the `REPLAY_HOSTS` setting) a 403 or a challenge page is an unusable capture, not a refusal: the next capture is
+tried, and a quest with no usable capture left is `missing_snapshot` in the index. Only the archive's own 429 counts
+there, backed off up to five times before it blocks `wiki_archive`. Its CDX server keeps the rule above.
+
 Requests to a host go one at a time, at least 3 seconds apart, robots.txt included, under a plain user agent that
 names the spider; Scrapy's AutoThrottle is off. The rule is the `StopRule` downloader middleware
 (`spiralspider/middlewares.py`); the politeness settings are in `spiralspider/settings.py`.
