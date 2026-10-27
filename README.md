@@ -54,6 +54,30 @@ The build runs `playwright install --with-deps chromium` inside the image. Witho
 The world is one of the spiraltools world registry (`spiraldb/tools/spiraltools/worlds.py`); another name is refused
 with the list of known worlds.
 
+## Using your own browser
+
+Set `SPIDER_CDP_URL` to the DevTools endpoint of a browser you run yourself (for example a browser container started
+with `--remote-debugging-port=9222 --remote-debugging-address=0.0.0.0`, reachable from the spider container) and the
+spider attaches to it over the Chrome DevTools Protocol instead of launching its bundled Chromium:
+
+```
+SPIDER_CDP_URL=http://host.docker.internal:9222 docker compose run --rm spider crawl Celestia
+```
+
+Profile, cookies and extensions stay in your browser; the spider only drives pages. Two ready-made ways to reach it:
+
+- a browser on this host: start it with remote debugging and use `http://host.docker.internal:9222` (the compose file
+  maps that name to the host);
+- a browser container: `docker-compose.browser.yml` adds a `browser` service on the spider's network (Microsoft's
+  Playwright image with Chromium, DevTools on 9222) and points the spider at it:
+
+```
+docker compose -f docker-compose.yml -f docker-compose.browser.yml run --rm spider crawl Celestia
+```
+
+Swap the `browser` service's image for whatever browser you run; it only has to serve the DevTools endpoint on 9222. The challenge rule is unchanged:
+a challenge page, 403 or 429 storm is recorded and the crawl moves to the next source.
+
 ## Output
 
 `out/<world>/` (`--out` moves it):

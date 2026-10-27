@@ -1,5 +1,6 @@
 """The sandboxed browser and the rules every request obeys: one request per interval, robots.txt, and the stop rule."""
 import contextlib
+import os
 import datetime
 import tempfile
 import time
@@ -113,14 +114,37 @@ class BrowserFetcher:
         return Response(response.status, self.page.content() if is_html else response.text(), self.page.url)
 
 
+CDP_URL_VARIABLE = "SPIDER_CDP_URL"
+
+
+def cdp_url(environ=None):
+    """The DevTools endpoint of a browser the user runs themselves (SPIDER_CDP_URL), or None for the bundled Chromium."""
+    value = (os.environ if environ is None else environ).get(CDP_URL_VARIABLE, "").strip()
+    return value or None
+
+
 @contextlib.contextmanager
-def browser_page():
-    """A plain headless Chromium with a fresh user-data directory that is deleted afterwards: no profile, no cookies."""
+def browser_page(environ=None):
+    """A page in either the bundled headless Chromium (fresh user-data directory, deleted afterwards: no profile, no
+    cookies) or, when SPIDER_CDP_URL names a DevTools endpoint, a browser the user runs themselves, attached over the
+    Chrome DevTools Protocol. The challenge rule applies to both: it reads the page that comes back."""
     from playwright.sync_api import sync_playwright
 
-    with tempfile.TemporaryDirectory(prefix="spiralspider-") as profile, sync_playwright() as playwright:
-        context = playwright.chromium.launch_persistent_context(profile, headless=True)
-        try:
-            yield context.new_page()
-        finally:
-            context.close()
+    endpoint = cdp_url(environ)
+    with sync_playwright() as playwright:
+        if endpoint:
+            browser = playwright.chromium.connect_over_cdp(endpoint)
+            context = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = context.new_page()
+            try:
+                yield page
+            finally:
+                page.close()
+                browser.close()
+            return
+        with tempfile.TemporaryDirectory(prefix="spiralspider-") as profile:
+            context = playwright.chromium.launch_persistent_context(profile, headless=True)
+            try:
+                yield context.new_page()
+            finally:
+                context.close()

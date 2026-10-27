@@ -8,3 +8,16 @@ services:
       - ./out:/work/out
       - ./cache:/work/cache
     shm_size: "1gb"
+    environment:
+      # Empty: the bundled headless Chromium. Set to the DevTools endpoint of a browser you run yourself
+      # (see "Using your own browser" in the README), e.g. http://host.docker.internal:9222 for a browser
+      # on this host, or http://browser:9222 for the `browser` service of docker-compose.browser.yml.
+      SPIDER_CDP_URL: ${SPIDER_CDP_URL:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - spider
+
+networks:
+  spider:
+    name: spiralspider

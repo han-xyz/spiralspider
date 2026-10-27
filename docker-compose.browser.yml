@@ -1,0 +1,30 @@
+# Optional: run your own browser as a container on the spider's network and point the spider at it.
+# Bring both up with:  docker compose -f docker-compose.yml -f docker-compose.browser.yml run --rm spider crawl Celestia
+# The image is yours to choose; the one below is Microsoft's Playwright image, which ships Chromium.
+# Whatever image you use, it must expose the DevTools endpoint on 0.0.0.0:9222 inside the container.
+services:
+  browser:
+    image: mcr.microsoft.com/playwright:v1.47.0-jammy
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        /ms-playwright/chromium-*/chrome-linux/chrome
+        --headless=new --no-sandbox --disable-gpu
+        --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0
+        --user-data-dir=/tmp/profile about:blank
+    shm_size: "1gb"
+    networks:
+      - spider
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9222/json/version || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  spider:
+    environment:
+      SPIDER_CDP_URL: http://browser:9222
+    depends_on:
+      browser:
+        condition: service_healthy

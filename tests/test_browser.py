@@ -102,3 +102,14 @@ class RateLimit(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CdpUrlTest(unittest.TestCase):
+    def test_unset_means_the_bundled_chromium(self):
+        from spiralspider.browser import cdp_url
+        self.assertIsNone(cdp_url({}))
+        self.assertIsNone(cdp_url({"SPIDER_CDP_URL": "  "}))
+
+    def test_set_names_the_users_browser(self):
+        from spiralspider.browser import cdp_url
+        self.assertEqual(cdp_url({"SPIDER_CDP_URL": "http://host.docker.internal:9222"}), "http://host.docker.internal:9222")
