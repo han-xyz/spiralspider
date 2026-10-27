@@ -3,8 +3,10 @@ import argparse
 import os
 import sys
 
-from scrapy.crawler import CrawlerProcess
-from twisted.internet import defer
+from scrapy.crawler import AsyncCrawlerRunner
+from scrapy.utils.defer import deferred_from_coro
+from scrapy.utils.log import configure_logging
+from scrapy.utils.reactor import install_reactor
 
 from .merge import PRIORITY, merge
 from .pipelines import Harvest
@@ -20,30 +22,41 @@ from .spiraltools_import import world
 
 SOURCES = {source.name: source for source in (WikiLive, WikiArchive, SpiralTracker, Folio, ForumGuide)}
 SELECTIONS = {"live": ("wiki_live",), "archive": ("wiki_archive",), "all": PRIORITY}
+ASYNCIO_REACTOR = "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
 
 
 def crawl(registered, selected, cache):
-    """Run the selected sources' spiders one after the other, in priority order, in one Scrapy process; a source the
-    stop rule blocks is closed and the next one starts. Returns the harvest of all of them."""
+    """Run the selected sources' spiders one after the other, in priority order; a source the stop rule blocks is
+    closed and the next one starts. Returns the harvest of all of them."""
     harvest = Harvest(selected)
-    process = CrawlerProcess(crawl_settings(cache))
+    crawls = [(SOURCES[name], {"world": registered.name, "cache": os.path.join(cache, name), "harvest": harvest})
+              for name in selected]
+    run_one_after_another(crawl_settings(cache), crawls)
+    return harvest
+
+
+def run_one_after_another(settings, crawls):
+    """Run each (spider class, spider arguments) of `crawls` to its end before the next starts, in one reactor, as
+    Scrapy's "running multiple spiders sequentially" does; the crawls start once the reactor runs."""
+    configure_logging(settings)
+    install_reactor(ASYNCIO_REACTOR)
+    from twisted.internet import reactor
+    runner = AsyncCrawlerRunner(settings)
     failures = []
 
-    @defer.inlineCallbacks
-    def one_by_one():
-        for name in selected:
-            yield process.crawl(SOURCES[name], world=registered.name, cache=os.path.join(cache, name), harvest=harvest)
+    async def one_by_one():
+        for spider, arguments in crawls:
+            await runner.crawl(spider, **arguments)
 
-    def stop(_):
-        # Imported here, not at the top: importing the reactor installs one, and the crawler must install asyncio's.
-        from twisted.internet import reactor
-        reactor.stop()
+    def start():
+        done = deferred_from_coro(one_by_one())
+        done.addErrback(failures.append)
+        done.addBoth(lambda _: reactor.stop())
 
-    one_by_one().addErrback(failures.append).addBoth(stop)
-    process.start(stop_after_crawl=False)
+    reactor.callWhenRunning(start)
+    reactor.run()
     if failures:
         failures[0].raiseException()
-    return harvest
 
 
 def write_results(registered, harvest, out_dir):
