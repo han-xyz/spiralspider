@@ -122,7 +122,7 @@ uv run spiralspider assist Celestia Zafaria      # or: --all-worlds
 ```
 
 For each world, it reads `index-<world>.json` in spiraltools' archive cache (`--cache`, default
-`../spiraldb/.scratch/friends-server/task-A1/cache`). It fetches the entries with `missing_snapshot` that have no
+`cache/wiki_archive`, the crawl's archive cache). It fetches the entries with `missing_snapshot` that have no
 cached copy. If the index is missing or empty, it walks the world's quest categories on the live wiki and writes the
 index first, marking every entry `missing_snapshot`. Pages land in the same folder as `<timestamp>_live_<page>.html`.
 The live wiki answers 404 for some pages; those entries get `missing_live: true` and are not asked again. The index is

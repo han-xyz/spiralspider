@@ -24,7 +24,8 @@ from .spiraltools_import import WORLDS, world
 SOURCES = {source.name: source for source in (WikiLive, WikiArchive, SpiralTracker, Folio, ForumGuide)}
 SELECTIONS = {"live": ("wiki_live",), "archive": ("wiki_archive",), "all": PRIORITY}
 ASYNCIO_REACTOR = "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
-ASSIST_CACHE = os.path.join("..", "spiraldb", ".scratch", "friends-server", "task-A1", "cache")
+# The crawl's own archive cache: the live copies land beside the captures, where the parser reads both.
+ASSIST_CACHE = os.path.join("cache", "wiki_archive")
 ASSIST_PROFILE = os.path.join(".scratch", "assist-profile")
 
 
