@@ -7,6 +7,34 @@ import unittest
 
 import context
 from spiralspider import assist
+
+
+class FakeCdpBrowser:
+    def __init__(self, contexts):
+        self.contexts = contexts
+
+    def new_context(self, **_):
+        return "new"
+
+
+class FakeChromium:
+    def __init__(self, contexts):
+        self.browser = FakeCdpBrowser(contexts)
+        self.connected = None
+        self.launched = None
+
+    def connect_over_cdp(self, endpoint):
+        self.connected = endpoint
+        return self.browser
+
+    def launch_persistent_context(self, profile, **_):
+        self.launched = profile
+        return "persistent"
+
+
+class FakePlaywright:
+    def __init__(self, contexts):
+        self.chromium = FakeChromium(contexts)
 from spiralspider.assist import Loaded
 from spiralspider.spiraltools_import import archive, world
 
@@ -73,6 +101,31 @@ def quietly(function, *args):
 
 
 class Checks(unittest.TestCase):
+    def test_the_users_browser_is_used_when_an_endpoint_is_given(self):
+        playwright = FakePlaywright(contexts=["theirs"])
+
+        context, closing = assist.open_context(playwright, "profile-dir", "http://127.0.0.1:9222")
+
+        self.assertEqual(("http://127.0.0.1:9222", "theirs"), (playwright.chromium.connected, context))
+        self.assertIs(playwright.chromium.browser, closing)
+        self.assertIsNone(playwright.chromium.launched)
+
+    def test_the_users_browser_without_a_context_gets_a_new_one(self):
+        playwright = FakePlaywright(contexts=[])
+
+        context, _ = assist.open_context(playwright, "profile-dir", "http://127.0.0.1:9222")
+
+        self.assertEqual("new", context)
+
+    def test_without_an_endpoint_the_persistent_profile_is_launched(self):
+        playwright = FakePlaywright(contexts=["theirs"])
+
+        context, closing = assist.open_context(playwright, "profile-dir", None)
+
+        self.assertEqual("profile-dir", playwright.chromium.launched)
+        self.assertIs(context, closing)
+        self.assertIsNone(playwright.chromium.connected)
+
     def test_challenge_titles_and_text(self):
         self.assertTrue(assist.is_challenge("Just a moment...", ""))
         self.assertTrue(assist.is_challenge("Performing security verification", ""))

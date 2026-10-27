@@ -128,7 +128,15 @@ index first, marking every entry `missing_snapshot`. Pages land in the same fold
 The live wiki answers 404 for some pages; those entries get `missing_live: true` and are not asked again. The index is
 written every 20 pages and on the way out, so Ctrl-C or a rerun picks up where it left off, and a page with a cached
 copy is skipped. The browser profile (`--profile`, default `.scratch/assist-profile`) keeps the clearance between
-runs. The command prints, per world, the pages wanted and to fetch, and at the end the pages fetched, 404 and
+runs. With `SPIDER_CDP_URL` set (see "Using your own browser"), `assist` attaches to that browser instead and loads
+its pages in the browser's own context, so the cookies and clearance of your session apply and the check, when it
+shows, is the one you see in that browser:
+
+```sh
+SPIDER_CDP_URL=http://127.0.0.1:9222 uv run spiralspider assist Celestia Zafaria
+```
+
+The command prints, per world, the pages wanted and to fetch, and at the end the pages fetched, 404 and
 remaining. spiraltools' archive parse then reads the live copies, from spiraldb:
 
 ```sh

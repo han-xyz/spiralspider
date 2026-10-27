@@ -9,6 +9,7 @@ import time
 import urllib.parse
 from typing import NamedTuple
 
+from .browser import cdp_url
 from .sources import STAMP, CategoryWalk, quest_name
 from .sources.wiki_archive import PAGE_SAFE
 from .sources.wiki_live import HOST, read_category
@@ -48,14 +49,26 @@ def is_missing(loaded):
     return loaded.status == 404 or (not loaded.has_content and NO_TEXT in loaded.html)
 
 
+def open_context(playwright, profile, endpoint=None):
+    """The browser context the pages load in: the user's own browser at `endpoint` (its default context, with their
+    cookies and clearance, or a new one when it has none), else a headed Chromium with the persistent profile
+    `profile`. Returns the context and what to close on the way out."""
+    if endpoint:
+        browser = playwright.chromium.connect_over_cdp(endpoint)
+        context = browser.contexts[0] if browser.contexts else browser.new_context(viewport=WINDOW)
+        return context, browser
+    context = playwright.chromium.launch_persistent_context(profile, headless=False, viewport=WINDOW)
+    return context, context
+
+
 def run(worlds, cache, profile):
-    """Fetches the pages each world's index lacks in a headed Chromium with the persistent profile `profile`; Ctrl-C
-    stops after saving the index."""
+    """Fetches the pages each world's index lacks, in the browser SPIDER_CDP_URL names or else a headed Chromium with
+    the persistent profile `profile`; Ctrl-C stops after saving the index."""
     from playwright.sync_api import sync_playwright
 
     results = {}
     with sync_playwright() as playwright:
-        browser_context = playwright.chromium.launch_persistent_context(profile, headless=False, viewport=WINDOW)
+        browser_context, closing = open_context(playwright, profile, cdp_url())
         try:
             browser = Browser(browser_context)
             load(browser, MAIN_PAGE)
@@ -64,7 +77,7 @@ def run(worlds, cache, profile):
         except KeyboardInterrupt:
             print("interrupted; the index is saved")
         finally:
-            browser_context.close()
+            closing.close()
     return results
 
 
