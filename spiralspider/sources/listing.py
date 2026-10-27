@@ -8,8 +8,10 @@ import html
 import re
 import urllib.parse
 
-from ..spiraltools_import import archive, world
-from . import Raw, fetch_cached, provenance
+from ..items import Listed, Record
+from ..middlewares import FETCHED
+from ..spiraltools_import import archive
+from . import SourceSpider, provenance, requested_url
 
 GOAL_TYPES = ("defeat", "talk", "collect", "explore", "find", "use", "survive", "go", "deliver")
 ITEM = re.compile(r"<li\b[^>]*>(.*?)</li>", re.S)
@@ -32,34 +34,27 @@ def listed_quests(page):
     return quests
 
 
-class ListingSource:
-    name = ""
+def listed_fields(quests, quest):
+    """The fields the listing gives for a quest it lists: its place in the order, the quest after it, its goals."""
+    wanted = archive.title_norm(quest)
+    position = next(i for i, (name, _) in enumerate(quests) if archive.title_norm(name) == wanted)
+    following = quests[position + 1:position + 2]
+    return {"name": quest, "order": position + 1, "leads_to": [name for name, _ in following],
+            "goal_types": quests[position][1]}
+
+
+class ListingSource(SourceSpider):
     url_template = ""
 
-    def __init__(self, gate, cache):
-        self.gate, self.cache = gate, cache
-        self.url = ""
+    async def start(self):
+        url = self.url_template.format(self.registered.wiki.lower().replace("_", "-"))
+        key = urllib.parse.urlsplit(url).path.strip("/") or "index"
+        yield self.page_request(key, url, self.read_listing, errback=self.listing_failed)
 
-    def enumerate(self, world_name):
-        slug = world(world_name).wiki.lower().replace("_", "-")
-        self.url = self.url_template.format(slug)
-        fetched = self.page()
-        return [name for name, _ in listed_quests(fetched[1])] if fetched else []
-
-    def page(self):
-        key = urllib.parse.urlsplit(self.url).path.strip("/") or "index"
-        return fetch_cached(self.gate, self.name, self.cache, key, self.url)
-
-    def fetch(self, quest):
-        fetched = self.page()
-        return Raw(quest, fetched[1], provenance(self.name, self.url, fetched[0])) if fetched else None
-
-    def parse(self, raw):
-        quests = listed_quests(raw.text)
-        wanted = archive.title_norm(raw.quest)
-        position = next((i for i, (name, _) in enumerate(quests) if archive.title_norm(name) == wanted), None)
-        if position is None:
-            return None
-        following = quests[position + 1:position + 2]
-        return {"name": raw.quest, "order": position + 1, "leads_to": [name for name, _ in following],
-                "goal_types": quests[position][1]}
+    def read_listing(self, response):
+        quests = listed_quests(response.text)
+        source = provenance(self.name, requested_url(response), response.meta[FETCHED])
+        for name, _ in quests:
+            yield Listed(self.name, name)
+        for name, _ in quests:
+            yield Record(self.name, name, listed_fields(quests, name), source)

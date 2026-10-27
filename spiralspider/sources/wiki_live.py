@@ -9,11 +9,17 @@ import os
 import re
 import urllib.parse
 
-from ..spiraltools_import import archive, world
-from . import Raw, fetch_cached, provenance
+from scrapy.spidermiddlewares.httperror import HttpError
+
+from ..items import Listed, Record
+from ..middlewares import FETCHED
+from ..spiraltools_import import archive
+from . import CategoryWalk, SourceSpider, provenance, quest_name, requested_url
 
 HOST = "https://wiki.wizard101central.com"
 NEXT_PAGE = re.compile(r'<a href="([^"]*pagefrom=[^"]*)"[^>]*>next page</a>')
+PLAYWRIGHT_HANDLER = "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler"
+BROWSER = {"playwright": True, "playwright_page_goto_kwargs": {"wait_until": "domcontentloaded"}}
 
 
 def read_category(page):
@@ -24,63 +30,65 @@ def read_category(page):
     return subcategories, quests, next_url
 
 
-def quest_name(page):
-    return page[len("Quest:"):].replace("_", " ")
-
-
-class WikiLive:
+class WikiLive(SourceSpider):
     name = "wiki_live"
+    custom_settings = {
+        "DOWNLOAD_HANDLERS": {"http": PLAYWRIGHT_HANDLER, "https": PLAYWRIGHT_HANDLER},
+        "HTTPCACHE_ENABLED": False,
+    }
 
-    def __init__(self, gate, cache):
-        self.gate, self.cache = gate, cache
-        self.pages = {}
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.walk = CategoryWalk(self.registered.category)
 
-    def enumerate(self, world_name):
-        registered = world(world_name)
-        quests = self.walk(registered.category)
+    async def start(self):
+        for request in self.next_category():
+            yield request
+
+    def page_request(self, key, url, callback, **kwargs):
+        request = super().page_request(key, url, callback, **kwargs)
+        request.meta.update(BROWSER)
+        return request
+
+    def next_category(self):
+        """The request for the next category of the walk, or, once the walk is done, the world's quest pages."""
+        following = self.walk.next()
+        if following is None:
+            yield from self.quest_pages()
+            return
+        category, zone = following
+        yield self.category_request(category, zone, f"{archive.WIKI}{category}", 0)
+
+    def category_request(self, category, zone, url, part):
+        key = f"{category}_part{part}" if part else category
+        return self.page_request(key, url, self.read_category_page, errback=self.category_failed,
+                                 cb_kwargs={"category": category, "zone": zone, "part": part})
+
+    def read_category_page(self, response, category, zone, part):
+        subcategories, members, next_url = read_category(response.text)
+        self.walk.add(category, zone, subcategories, members)
+        if next_url:
+            yield self.category_request(category, zone, next_url, part + 1)
+            return
+        yield from self.next_category()
+
+    def category_failed(self, failure):
+        if failure.check(HttpError):
+            self.listing_failed(failure)
+            yield from self.next_category()
+
+    def quest_pages(self):
         index = [{"name": quest_name(page), "page": page, "zones": sorted(entry["zones"]),
-                  "type": "/".join(sorted(entry["types"])) or None} for page, entry in sorted(quests.items())]
+                  "type": "/".join(sorted(entry["types"])) or None} for page, entry in sorted(self.walk.quests.items())]
         os.makedirs(self.cache, exist_ok=True)
-        with open(archive.index_path(self.cache, registered.name), "w", encoding="utf-8") as f:
+        with open(archive.index_path(self.cache, self.registered.name), "w", encoding="utf-8") as f:
             json.dump(index, f, indent=2, ensure_ascii=False)
-        self.pages = {entry["name"]: entry["page"] for entry in index}
-        return list(self.pages)
+        for entry in index:
+            yield Listed(self.name, entry["name"])
+        for entry in index:
+            url = archive.WIKI + urllib.parse.quote(entry["page"], safe=":_()/,!")
+            yield self.page_request(entry["page"], url, self.read_quest, cb_kwargs={"quest": entry["name"]})
 
-    def walk(self, root):
-        """quest page -> {"zones", "types"} over the category tree, as spiraltools' archive walk reads it."""
-        quests, seen, queue = {}, set(), [(root, None)]
-        while queue:
-            category, zone = queue.pop(0)
-            if category in seen:
-                continue
-            seen.add(category)
-            url, key, part = f"{archive.WIKI}{category}", category, 0
-            while url:
-                fetched = fetch_cached(self.gate, self.name, self.cache, key, url)
-                if fetched is None:
-                    break
-                subcategories, members, url = read_category(fetched[1])
-                part += 1
-                key = f"{category}_part{part}"
-                kind = archive.quest_type_of(category)
-                for page in members:
-                    entry = quests.setdefault(page, {"zones": set(), "types": set()})
-                    if zone:
-                        entry["zones"].add(zone)
-                    if kind:
-                        entry["types"].add(kind)
-                for sub in subcategories:
-                    is_zone = category == root and not archive.quest_type_of(sub)
-                    queue.append((sub, sub[len("Category:"):-len("_Quests")].replace("_", " ") if is_zone else zone))
-        return quests
-
-    def fetch(self, quest):
-        page = self.pages.get(quest) or archive.page_key(f"Quest:{quest}")
-        url = archive.WIKI + urllib.parse.quote(page, safe=":_()/,!")
-        fetched = fetch_cached(self.gate, self.name, self.cache, page, url)
-        if fetched is None:
-            return None
-        return Raw(quest, fetched[1], provenance(self.name, url, fetched[0]))
-
-    def parse(self, raw):
-        return {"name": raw.quest, **archive.read_page(raw.text)}
+    def read_quest(self, response, quest):
+        fields = {"name": quest, **archive.read_page(response.text)}
+        yield Record(self.name, quest, fields, provenance(self.name, requested_url(response), response.meta[FETCHED]))

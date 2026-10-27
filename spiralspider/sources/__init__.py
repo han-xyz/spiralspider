@@ -1,61 +1,81 @@
-"""Quest data sources. Each one has a `name` and the same three steps:
+"""Quest data sources, one Scrapy spider each, named after the source. A source spider lists the world's quests (a
+`Listed` item per quest) and yields a `Record` of the fields it gives for each quest it has a page for.
 
-- `enumerate(world)`: the names of the world's quests the source knows;
-- `fetch(quest)`: the raw page for that quest as a `Raw`, or None when the source has no page for it;
-- `parse(raw)`: the quest's fields as the source gives them, or None.
-
-Every request goes through the crawl's `Gate`, which raises `Blocked` when the source refuses us.
+Every request passes the stop rule (`middlewares.StopRule`). A page requested through `page_request` is cached in the
+layout of spiraltools' archive cache (`middlewares.PageCache`), and its timestamp is the provenance's `fetched`.
 """
 import datetime
-import os
-from typing import NamedTuple
 
 import scrapy
+from scrapy.spidermiddlewares.httperror import HttpError
 
 from .. import spiraltools_import
+from ..middlewares import PAGE
 from ..spiraltools_import import archive
 
 STAMP = "%Y%m%d%H%M%S"
-
-
-class Raw(NamedTuple):
-    quest: str
-    text: str
-    provenance: dict
 
 
 def provenance(source, url, fetched):
     return {"source": source, "url": url, "fetched": fetched}
 
 
-def fetch_cached(gate, source, cache, key, url):
-    """(timestamp, text) of a page from the cache, else fetched and cached as <timestamp>_<key>.html.
+def requested_url(response):
+    """The URL a page was asked for, before any redirect."""
+    return response.meta.get("redirect_urls", [response.request.url])[0]
 
-    None when the source answers with anything but 200.
-    """
-    hit = archive.cached(cache, key)
-    if hit:
-        with open(hit[1], encoding="utf-8") as f:
-            return hit[0], f.read()
-    response = gate.fetch(source, url)
-    if response.status != 200:
-        return None
-    stamp = datetime.datetime.now(datetime.timezone.utc).strftime(STAMP)
-    os.makedirs(cache, exist_ok=True)
-    with open(os.path.join(cache, f"{stamp}_{archive.file_name(key)}.html"), "w", encoding="utf-8") as f:
-        f.write(response.text)
-    return stamp, response.text
+
+def quest_name(page):
+    return page[len("Quest:"):].replace("_", " ")
 
 
 class SourceSpider(scrapy.Spider):
-    """A source as a Scrapy spider named after it, given the world's name, the source's cache folder and the crawl's
-    harvest. Every request it makes passes the stop rule; a page it requests with meta[PAGE] is cached (PageCache)."""
+    """A source as a Scrapy spider, given the world's name, the source's cache folder and the crawl's harvest."""
 
     def __init__(self, world, cache, harvest, **kwargs):
         super().__init__(**kwargs)
         self.registered = spiraltools_import.world(world)
         self.cache, self.harvest = cache, harvest
 
+    def page_request(self, key, url, callback, **kwargs):
+        """A request for the page `key` (its file name in the cache), answered from the cache when it is there."""
+        return scrapy.Request(url, callback=callback, meta={PAGE: key}, **kwargs)
+
     def fetched_stamp(self, response):
         """The timestamp a page fetched now is cached and cited under: the UTC time of the fetch."""
         return datetime.datetime.now(datetime.timezone.utc).strftime(STAMP)
+
+    def listing_failed(self, failure):
+        """A listing page answered with another HTTP error: recorded, and the source goes on with what it has."""
+        if failure.check(HttpError):
+            response = failure.value.response
+            self.harvest.errors.append({"source": self.name, "url": response.url, "reason": f"HTTP {response.status}"})
+
+
+class CategoryWalk:
+    """The walk over a world's quest categories that spiraltools' archive walk makes, breadth first: quest page ->
+    {"zones", "types"}, where a zone is a subcategory of the root that is not a quest type."""
+
+    def __init__(self, root):
+        self.root, self.queue, self.seen, self.quests = root, [(root, None)], set(), {}
+
+    def next(self):
+        """The next category not yet walked and its zone, or None when the walk is done."""
+        while self.queue:
+            category, zone = self.queue.pop(0)
+            if category not in self.seen:
+                self.seen.add(category)
+                return category, zone
+        return None
+
+    def add(self, category, zone, subcategories, members):
+        kind = archive.quest_type_of(category)
+        for page in members:
+            entry = self.quests.setdefault(page, {"zones": set(), "types": set()})
+            if zone:
+                entry["zones"].add(zone)
+            if kind:
+                entry["types"].add(kind)
+        for sub in subcategories:
+            is_zone = category == self.root and not archive.quest_type_of(sub)
+            self.queue.append((sub, sub[len("Category:"):-len("_Quests")].replace("_", " ") if is_zone else zone))

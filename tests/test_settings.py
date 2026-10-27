@@ -3,6 +3,7 @@ import unittest
 from scrapy.utils.test import get_crawler
 
 import context  # noqa: F401
+from spiralspider.cli import SOURCES
 from spiralspider.settings import crawl_settings
 
 
@@ -10,8 +11,8 @@ def no_lookup(host):
     raise AssertionError("no lookup expected for " + host)
 
 
-def settings(environ=None, resolve=no_lookup):
-    return get_crawler(settings_dict=crawl_settings("cache", environ or {}, resolve)).settings
+def settings(environ=None, resolve=no_lookup, spider=None):
+    return get_crawler(spider, crawl_settings("cache", environ or {}, resolve)).settings
 
 
 class Politeness(unittest.TestCase):
@@ -21,6 +22,12 @@ class Politeness(unittest.TestCase):
         self.assertFalse(crawl.getbool("RANDOMIZE_DOWNLOAD_DELAY"))
         self.assertEqual(crawl.getint("CONCURRENT_REQUESTS_PER_DOMAIN"), 1)
         self.assertFalse(crawl.getbool("AUTOTHROTTLE_ENABLED"))
+
+    def test_no_source_loosens_the_politeness(self):
+        for spider in SOURCES.values():
+            crawl = settings(spider=spider)
+            self.assertEqual((crawl.getfloat("DOWNLOAD_DELAY"), crawl.getint("CONCURRENT_REQUESTS_PER_DOMAIN"),
+                              crawl.getbool("ROBOTSTXT_OBEY")), (3.0, 1, True), spider.name)
 
     def test_robots_txt_is_obeyed(self):
         self.assertTrue(settings().getbool("ROBOTSTXT_OBEY"))

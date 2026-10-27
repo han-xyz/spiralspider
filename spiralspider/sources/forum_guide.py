@@ -8,13 +8,16 @@ import html
 import re
 import urllib.parse
 
-from ..spiraltools_import import archive, world
-from . import Raw, fetch_cached, provenance
+from ..items import Listed, Record
+from ..middlewares import FETCHED
+from . import SourceSpider, provenance, requested_url
 
 # world name (as the spiraltools registry spells it) -> web.archive.org URLs of its quest guides
 GUIDES = {
     # world: the Wayback copy of the Wizard101 Central forum guide (the live forum refuses automated clients).
-    "Celestia": "https://web.archive.org/web/20230930053505/https://www.wizard101central.com/forums/showthread.php?110487-Complete-Guide-to-Celestia-Quests",
+    "Celestia": (
+        "https://web.archive.org/web/20230930053505/https://www.wizard101central.com/forums/showthread.php?110487-Complete-Guide-to-Celestia-Quests",
+    ),
 }
 BOLD = re.compile(r"<b>(.*?)</b>(.*?)(?=<b>|$)", re.S)
 XP = re.compile(r"([\d,]+)\s*XP\b", re.I)
@@ -33,32 +36,16 @@ def rewards(page):
     return found
 
 
-class ForumGuide:
+class ForumGuide(SourceSpider):
     name = "forum_guide"
 
-    def __init__(self, gate, cache):
-        self.gate, self.cache = gate, cache
-        self.guides = {}
-
-    def enumerate(self, world_name):
-        names = []
-        for url in GUIDES.get(world(world_name).name, ()):
+    async def start(self):
+        for url in GUIDES.get(self.registered.name, ()):
             key = urllib.parse.urlsplit(url).path.strip("/")
-            fetched = fetch_cached(self.gate, self.name, self.cache, key, url)
-            if fetched is None:
-                continue
-            for name in rewards(fetched[1]):
-                self.guides.setdefault(name, (url, *fetched))
-                names.append(name)
-        return names
+            yield self.page_request(key, url, self.read_guide, errback=self.listing_failed)
 
-    def fetch(self, quest):
-        if quest not in self.guides:
-            return None
-        url, stamp, text = self.guides[quest]
-        return Raw(quest, text, provenance(self.name, url, stamp))
-
-    def parse(self, raw):
-        wanted = archive.title_norm(raw.quest)
-        reward = next((r for name, r in rewards(raw.text).items() if archive.title_norm(name) == wanted), None)
-        return {"name": raw.quest, "reward": reward} if reward else None
+    def read_guide(self, response):
+        source = provenance(self.name, requested_url(response), response.meta[FETCHED])
+        for name, reward in rewards(response.text).items():
+            yield Listed(self.name, name)
+            yield Record(self.name, name, {"name": name, "reward": reward}, source)
