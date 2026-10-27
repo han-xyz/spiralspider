@@ -1,0 +1,106 @@
+# spiralspider
+
+Gathers quest data for the worlds the Wizard101 data pack ([spiraldb](../spiraldb)) still lacks, from sources that
+permit it, and writes a spiraltools quest spec per quest and a gap report per world. It runs a plain headless
+Playwright Chromium inside a disposable Docker container: no host profile, no cookies, a fresh browser profile per
+run that is deleted afterwards, and no anti-detection or fingerprint changes of any kind.
+
+## The stop rule
+
+When a source refuses us, the spider stops asking it. A Cloudflare challenge page ("Just a moment...", "Performing
+security verification", "Verify you are human", a Turnstile widget), an HTTP 403, or a second HTTP 429 after one
+backoff of 60 seconds is recorded (source, URL, time, reason) in the gap report, and the crawl moves on to the next
+source. It is never worked around and never retried beyond that one backoff. A URL that the host's robots.txt
+disallows is never requested and is recorded the same way. Every request, robots.txt included, waits at least
+3 seconds after the one before.
+
+## Sources
+
+In priority order (`spiralspider sources` lists them):
+
+| source | what it reads | gives |
+| --- | --- | --- |
+| `wiki_live` | `wiki.wizard101central.com`: `Category:<World>_Quests`, its subcategories and next pages, then each `Quest:<Name>` page | every field the wiki page has |
+| `wiki_archive` | the Internet Archive's CDX index of `Quest:` pages and its category captures, then each quest's snapshot (`/web/<ts>id_/`, else the playback form); only for quests `wiki_live` did not parse | the same fields |
+| `spiraltracker` | `spiraltracker.com/<world>` | quest order, next quest, goal types |
+| `folio` | `wizard101folio.com/<world>-quest-tree` | quest order, next quest, goal types |
+| `forum_guide` | archived Wizard101 Central forum guides listed per world in `GUIDES` of `spiralspider/sources/forum_guide.py` (empty until a guide URL is added) | rewards |
+
+The wiki pages are read with the parser of spiraltools (`spiraldb/tools/spiraltools/quests/archive.py`), imported from
+the sibling checkout `../spiraldb/tools`, or from the directory `SPIRALTOOLS` names. The spiraltracker, folio and
+forum guide readers assume a markup (list items in page order; bold quest names followed by "<n> XP" and "<n> Gold")
+that has not been checked against the live sites; their tests hold that assumption.
+
+Each quest's records are merged field by field: a field takes the value of the highest-priority source that has one,
+and the spec's `source` names, per field, the source, URL and fetch time it came from.
+
+## Run it in Docker
+
+The image builds from this checkout and from `../spiraldb/tools` (a second build context, not a mount). The container
+mounts only `./out` and `./cache`, and runs as uid 1000; create both directories first so they belong to you:
+
+```sh
+mkdir -p out cache
+docker compose build
+docker compose run --rm spider crawl Celestia                    # every source
+docker compose run --rm spider crawl Celestia --source live      # the live wiki only (or: archive)
+docker compose run --rm spider gaps Celestia                     # print the last crawl's gap report
+docker compose run --rm spider sources
+```
+
+The build runs `playwright install --with-deps chromium` inside the image. Without compose:
+`docker build --build-context spiraltools=../spiraldb/tools -t spiralspider .`
+
+The world is one of the spiraltools world registry (`spiraldb/tools/spiraltools/worlds.py`); another name is refused
+with the list of known worlds.
+
+## Output
+
+`out/<world>/` (`--out` moves it):
+
+- `<id>.json`: a spec with no blocking gap, in the schema of `spiraldb/tools/README.md` ("Spec").
+- `blocked/<id>.json`: a spec with a blocking gap. The sources give names, prerequisites and rewards; the client's
+  keys a spec also needs (the `WizQst` lang, personas, mob and item adjectives) are not readable here, so every spec
+  lists `lang`, `giver` and `goals` in `needs_review` as blocking, with the wiki's values, and lands here.
+- `gap-report.json`: see below.
+
+The ids are spiraltools' fallback ids, `<folder>-Q-<normalised title>` (`CL-Q-deeperanddeeper`); `requires` and
+`successors` name the ids of the other quests of the crawl.
+
+Copy `out/<world>/` into `spiraldb/tools/quest-specs/<world>/`; the `blocked/` folder is where the questgen glob does
+not reach. A spec leaves `blocked/` only through the client-resolved pass: spiraltools reads the spider's wiki cache,
+which uses its layout, resolves the client keys and writes the specs it can complete to `quest-specs/<world>/`:
+
+```sh
+python3 -I tools/spiraltools.py archive parse Celestia --cache ../spiralspider/cache/wiki_live
+python3 -I tools/spiraltools.py archive parse Celestia --cache ../spiralspider/cache/wiki_archive
+```
+
+## Cache and provenance
+
+`cache/<source>/` (`--cache` moves it) holds every page fetched, as `<timestamp>_<page>.html`, the timestamp being
+the UTC fetch time (`wiki_archive`: the capture's timestamp). `wiki_live` and `wiki_archive` also write
+`index-<world>.json` (quest name, page, zones, type), as spiraltools' archive cache does. A page already in the cache
+is not fetched again; delete it to fetch it anew. The provenance of each spec field is in the spec's `source`.
+
+## Gap report
+
+`out/<world>/gap-report.json`, printed at the end of a crawl and by `spiralspider gaps <World>`:
+
+- `sources`: per source, the quests it enumerated and parsed;
+- `found`, `parsed`, `specs_ready`: quests listed by any source, quests with a record from any source, specs without
+  a blocking gap;
+- `blocked_sources`: each refusal under the stop rule (source, URL, reason, time);
+- `errors`: a source that failed with another HTTP error while listing quests;
+- `needs_review`: per spec field, how many specs have it blocking or to review;
+- `missing_from_every_source`: quests some source listed that no source gave a record for.
+
+## Tests
+
+```sh
+python3 -I -m unittest discover tests
+```
+
+No network and no browser: the challenge detector on saved challenge pages, the rate limiter and the stop rule, the
+merge priority, the spec writer against the schema, and each source's parser on a fixture. They need the spiraldb
+checkout beside this one (or `SPIRALTOOLS`).
