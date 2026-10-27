@@ -13,7 +13,8 @@ security verification", "Verify you are human", a Turnstile widget), an HTTP 403
 backoff of 60 seconds (the crawl pauses for it) is recorded (source, URL, time, reason) in the gap report, the
 source's spider is closed with nothing more requested, and the crawl moves on to the next source. It is never worked
 around and never retried beyond that one backoff. A URL that the host's robots.txt disallows is never requested and
-is recorded the same way. A server error (5xx) or a network error is retried once; nothing else is retried.
+is recorded the same way. A server error (5xx) or a network error is retried once (a CDX lookup of the Internet
+Archive three times); nothing else is retried.
 
 Requests to a host go one at a time, at least 3 seconds apart, robots.txt included, under a plain user agent that
 names the spider; Scrapy's AutoThrottle is off. The rule is the `StopRule` downloader middleware
@@ -26,15 +27,16 @@ In priority order (`spiralspider sources` lists them):
 | source | what it reads | gives |
 | --- | --- | --- |
 | `wiki_live` | `wiki.wizard101central.com`: `Category:<World>_Quests`, its subcategories and next pages, then each `Quest:<Name>` page | every field the wiki page has |
-| `wiki_archive` | the Internet Archive's CDX index of `Quest:` pages and its category captures, then each quest's snapshot (`/web/<ts>id_/`, else the playback form); only for quests `wiki_live` did not parse | the same fields |
+| `wiki_archive` | the Internet Archive's captures of the world's category pages (the newest raw capture with status 200 that lists members, found through the CDX), a CDX lookup per quest page for its newest captures, then each quest's snapshot (`/web/<ts>id_/`, else the playback form); only for quests `wiki_live` did not parse | the same fields |
 | `spiraltracker` | `spiraltracker.com/<world>` | quest order, next quest, goal types |
 | `folio` | `wizard101folio.com/<world>-quest-tree` | quest order, next quest, goal types |
 | `forum_guide` | archived Wizard101 Central forum guides listed per world in `GUIDES` of `spiralspider/sources/forum_guide.py` (Celestia so far) | rewards |
 
 The wiki pages are read with the parser of spiraltools (`spiraldb/tools/spiraltools/quests/archive.py`), imported from
-the sibling checkout `../spiraldb/tools`, or from the directory `SPIRALTOOLS` names. The spiraltracker, folio and
-forum guide readers assume a markup (list items in page order; bold quest names followed by "<n> XP" and "<n> Gold")
-that has not been checked against the live sites; their tests hold that assumption.
+the sibling checkout `../spiraldb/tools`, or from the directory `SPIRALTOOLS` names. The spiraltracker and folio
+readers follow those sites' markup as of 2026-10-27 (spiraltracker's quest rows and step badges, folio's quest
+tables), with the Dragonspyre pages of that day as their test fixtures; the forum guide reader assumes a markup (bold
+quest names followed by "<n> XP" and "<n> Gold") that has not been checked against an archived guide.
 
 Each source is a spider in `spiralspider/sources/`, named after the source. Only `wiki_live` goes through the browser
 (scrapy-playwright); the others use Scrapy's plain downloader and its HTTP cache. robots.txt is always fetched by the
@@ -136,8 +138,8 @@ A response in it is not fetched again either; delete the folder to fetch everyth
 - `found`, `parsed`, `specs_ready`: quests listed by any source, quests with a record from any source, specs without
   a blocking gap;
 - `blocked_sources`: each refusal under the stop rule (source, URL, reason, time);
-- `errors`: a listing page (category, CDX index, quest listing, guide) a source got another HTTP error for; the
-  source goes on without it;
+- `errors`: a listing page (category lookup, quest listing, guide) a source got another HTTP error for, the source
+  going on without it; and a record a source gave without a quest name, which gets no spec;
 - `needs_review`: per spec field, how many specs have it blocking or to review;
 - `missing_from_every_source`: quests some source listed that no source gave a record for.
 
